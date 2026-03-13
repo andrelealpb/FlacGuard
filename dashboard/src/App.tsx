@@ -6,9 +6,11 @@ import Playback from "./pages/Playback";
 import PDVs from "./pages/PDVs";
 import Settings from "./pages/Settings";
 import Stats from "./pages/Stats";
+import Cameras from "./pages/Cameras";
 
 const navItems = [
   { to: "/", label: "Ao Vivo" },
+  { to: "/cameras", label: "Câmeras" },
   { to: "/playback", label: "Gravações" },
   { to: "/pdvs", label: "PDVs" },
   { to: "/settings", label: "Configurações" },
@@ -72,6 +74,7 @@ function App() {
       <main style={{ padding: "1.5rem" }}>
         <Routes>
           <Route path="/" element={<Live />} />
+          <Route path="/cameras" element={<Cameras />} />
           <Route path="/playback" element={<Playback />} />
           <Route path="/pdvs" element={<PDVs />} />
           <Route path="/settings" element={<Settings />} />
