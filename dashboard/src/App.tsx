@@ -5,12 +5,14 @@ import Live from "./pages/Live";
 import Playback from "./pages/Playback";
 import PDVs from "./pages/PDVs";
 import Settings from "./pages/Settings";
+import Stats from "./pages/Stats";
 
 const navItems = [
   { to: "/", label: "Ao Vivo" },
   { to: "/playback", label: "Gravações" },
   { to: "/pdvs", label: "PDVs" },
   { to: "/settings", label: "Configurações" },
+  { to: "/stats", label: "Stats" },
 ];
 
 const navLinkStyle = ({ isActive }: { isActive: boolean }) => ({
@@ -73,6 +75,7 @@ function App() {
           <Route path="/playback" element={<Playback />} />
           <Route path="/pdvs" element={<PDVs />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/stats" element={<Stats />} />
         </Routes>
       </main>
     </div>
