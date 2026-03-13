@@ -10,7 +10,7 @@ ExecStart=/usr/bin/node /opt/happydo-guard/deploy/webhook.js
 Restart=always
 RestartSec=5
 Environment=WEBHOOK_PORT=9000
-Environment=DEPLOY_BRANCH=*
+Environment=DEPLOY_BRANCH=main
 EnvironmentFile=-/opt/happydo-guard/.env
 
 [Install]
