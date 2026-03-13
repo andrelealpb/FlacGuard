@@ -1,3 +1,4 @@
+// HappyDo Guard — Auto-deploy webhook
 const http = require('http');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
