@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { authenticate } from '../services/auth.js';
-import { generateStreamKey, getHlsUrl, getRtmpUrl } from '../services/rtmp.js';
+import { generateStreamKey, getHlsUrl, getRtmpUrl, getRtmpPublicUrl, getHlsPublicUrl } from '../services/rtmp.js';
 import { findRecordingByTimestamp, listRecordings } from '../services/recording.js';
 
 const router = Router();
@@ -95,6 +95,8 @@ router.post('/', authenticate, async (req, res) => {
       ...camera,
       rtmp_url: getRtmpUrl(camera.stream_key),
       hls_url: getHlsUrl(camera.stream_key),
+      rtmp_public_url: getRtmpPublicUrl(camera.stream_key),
+      hls_public_url: getHlsPublicUrl(camera.stream_key),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -116,6 +118,8 @@ router.get('/:id', authenticate, async (req, res) => {
       ...camera,
       rtmp_url: getRtmpUrl(camera.stream_key),
       hls_url: getHlsUrl(camera.stream_key),
+      rtmp_public_url: getRtmpPublicUrl(camera.stream_key),
+      hls_public_url: getHlsPublicUrl(camera.stream_key),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -194,6 +198,8 @@ router.get('/:id/live', authenticate, async (req, res) => {
     res.json({
       hls_url: getHlsUrl(stream_key),
       rtmp_url: getRtmpUrl(stream_key),
+      rtmp_public_url: getRtmpPublicUrl(stream_key),
+      hls_public_url: getHlsPublicUrl(stream_key),
       status,
     });
   } catch (err) {

@@ -22,6 +22,8 @@ interface Camera {
   pdv_code: string | null;
   rtmp_url?: string;
   hls_url?: string;
+  rtmp_public_url?: string;
+  hls_public_url?: string;
   created_at: string;
 }
 
@@ -47,25 +49,9 @@ const emptyForm: CameraForm = {
 };
 
 function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => void }) {
-  const rtmpUrl = camera.rtmp_url || `rtmp://<SERVIDOR>:1935/live/${camera.stream_key}`;
-  const hlsUrl = camera.hls_url || `http://<SERVIDOR>:8080/hls/${camera.stream_key}.m3u8`;
+  const rtmpPublicUrl = camera.rtmp_public_url || camera.rtmp_url || `rtmp://<SERVIDOR>:1935/live/${camera.stream_key}`;
+  const hlsPublicUrl = camera.hls_public_url || camera.hls_url || `http://<SERVIDOR>:8080/hls/${camera.stream_key}.m3u8`;
   const isIC = camera.camera_group === "ic";
-
-  // Parse RTMP URL into components for camera config fields
-  // rtmp://host:port/live/streamkey
-  let rtmpHost = "";
-  let rtmpPort = "1935";
-  let rtmpPath = "/live";
-  try {
-    const match = rtmpUrl.match(/^rtmp:\/\/([^:/]+):?(\d+)?(\/[^/]+)?/);
-    if (match) {
-      rtmpHost = match[1];
-      rtmpPort = match[2] || "1935";
-      rtmpPath = match[3] || "/live";
-    }
-  } catch { /* fallback */ }
-
-  const rtmpAddress = `${rtmpHost}${rtmpPath}`;
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text).catch(() => {});
@@ -100,13 +86,6 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
     marginBottom: "0.3rem",
     marginTop: "1rem",
     color: "#333",
-  };
-
-  const labelHint: React.CSSProperties = {
-    fontSize: "0.7rem",
-    color: "#888",
-    fontWeight: 400,
-    marginLeft: "0.4rem",
   };
 
   return (
@@ -153,19 +132,19 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
         </p>
 
         {/* Dados da câmera */}
-        <div style={sectionTitle}>Nome da Câmera</div>
-        <div style={fieldStyle}>
-          <span style={{ flex: 1 }}>{camera.name}</span>
-        </div>
-
-        <div style={sectionTitle}>Modelo</div>
-        <div style={fieldStyle}>
-          <span style={{ flex: 1 }}>{camera.model} ({camera.camera_group.toUpperCase()})</span>
-        </div>
-
-        <div style={sectionTitle}>PDV</div>
-        <div style={fieldStyle}>
-          <span style={{ flex: 1 }}>{camera.pdv_code ? `[${camera.pdv_code}] ` : ""}{camera.pdv_name}</span>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem 1rem", marginTop: "0.5rem" }}>
+          <div>
+            <div style={sectionTitle}>Modelo</div>
+            <div style={fieldStyle}>
+              <span style={{ flex: 1 }}>{camera.model} ({camera.camera_group.toUpperCase()})</span>
+            </div>
+          </div>
+          <div>
+            <div style={sectionTitle}>PDV</div>
+            <div style={fieldStyle}>
+              <span style={{ flex: 1 }}>{camera.pdv_code ? `[${camera.pdv_code}] ` : ""}{camera.pdv_name}</span>
+            </div>
+          </div>
         </div>
 
         {camera.location_description && (
@@ -177,7 +156,7 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
           </>
         )}
 
-        {/* Dados para configurar na câmera - Seção destaque */}
+        {/* Seção principal — URL RTMP para colar na câmera */}
         <div style={{
           marginTop: "1.5rem",
           padding: "1.25rem",
@@ -185,61 +164,57 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
           borderRadius: "8px",
           border: "1px solid #c8e6c9",
         }}>
-          <h4 style={{ margin: "0 0 0.75rem 0", fontSize: "0.95rem", color: "#2e7d32" }}>
-            Dados para inserir na câmera
+          <h4 style={{ margin: "0 0 0.5rem 0", fontSize: "0.95rem", color: "#2e7d32" }}>
+            Cole no campo "URL RTMP" da câmera
           </h4>
           <p style={{ margin: "0 0 0.75rem 0", fontSize: "0.8rem", color: "#555" }}>
-            No app Intelbras ou interface web, acesse <strong>Configuração RTMP</strong>, selecione
-            {" "}<strong>Personalizado</strong> e preencha:
+            No app Intelbras: <strong>Configuração RTMP</strong> &rarr; <strong>Personalizado</strong> &rarr; campo <strong>URL RTMP</strong>
           </p>
 
-          {/* Endereço */}
-          <div style={{ ...sectionTitle, marginTop: "0.5rem" }}>
-            Endereço <span style={labelHint}>(campo "Endereço" na câmera)</span>
-          </div>
-          <div style={fieldStyle}>
-            <span style={{ flex: 1 }}>{rtmpAddress}</span>
-            <button onClick={() => copyToClipboard(rtmpAddress)} style={copyBtn}>Copiar</button>
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "0.5rem",
+            background: "#fff",
+            padding: "0.75rem 1rem",
+            borderRadius: "6px",
+            fontFamily: "monospace",
+            fontSize: "0.85rem",
+            wordBreak: "break-all",
+            border: "2px solid #4caf50",
+          }}>
+            <span style={{ flex: 1 }}>{rtmpPublicUrl}</span>
+            <button onClick={() => copyToClipboard(rtmpPublicUrl)} style={{ ...copyBtn, background: "#4caf50", color: "#fff", border: "1px solid #4caf50", padding: "0.3rem 0.75rem", fontSize: "0.8rem" }}>
+              Copiar
+            </button>
           </div>
 
-          {/* Porta */}
-          <div style={sectionTitle}>
-            Porta <span style={labelHint}>(campo "Porta" na câmera)</span>
-          </div>
-          <div style={fieldStyle}>
-            <span style={{ flex: 1 }}>{rtmpPort}</span>
-            <button onClick={() => copyToClipboard(rtmpPort)} style={copyBtn}>Copiar</button>
-          </div>
-
-          {/* Stream Key */}
-          <div style={sectionTitle}>
-            Stream Key <span style={labelHint}>(campo "URL RTMP" ou "Chave de transmissão")</span>
-          </div>
-          <div style={fieldStyle}>
-            <span style={{ flex: 1 }}>{camera.stream_key}</span>
-            <button onClick={() => copyToClipboard(camera.stream_key)} style={copyBtn}>Copiar</button>
-          </div>
+          {rtmpPublicUrl.includes("<SERVIDOR>") && (
+            <div style={{ marginTop: "0.5rem", padding: "0.5rem 0.75rem", background: "#fff3e0", borderRadius: "4px", fontSize: "0.78rem", color: "#e65100" }}>
+              <strong>Atenção:</strong> O endereço do servidor ainda não foi configurado.
+              Defina a variável <code>RTMP_PUBLIC_HOST</code> no docker-compose.yml com o IP ou domínio público do servidor.
+            </div>
+          )}
         </div>
 
-        {/* URLs completas (referência) */}
-        <div style={{ ...sectionTitle, marginTop: "1.5rem", color: "#1a1a2e", fontSize: "0.85rem" }}>
-          URLs completas (referência)
-        </div>
-        <div style={sectionTitle}>URL RTMP</div>
+        {/* Stream Key separada para referência */}
+        <div style={sectionTitle}>Stream Key (referência)</div>
         <div style={fieldStyle}>
-          <span style={{ flex: 1 }}>{rtmpUrl}</span>
-          <button onClick={() => copyToClipboard(rtmpUrl)} style={copyBtn}>Copiar</button>
+          <span style={{ flex: 1 }}>{camera.stream_key}</span>
+          <button onClick={() => copyToClipboard(camera.stream_key)} style={copyBtn}>Copiar</button>
         </div>
+
+        {/* HLS URL */}
         <div style={sectionTitle}>URL HLS (visualização ao vivo)</div>
         <div style={fieldStyle}>
-          <span style={{ flex: 1 }}>{hlsUrl}</span>
-          <button onClick={() => copyToClipboard(hlsUrl)} style={copyBtn}>Copiar</button>
+          <span style={{ flex: 1 }}>{hlsPublicUrl}</span>
+          <button onClick={() => copyToClipboard(hlsPublicUrl)} style={copyBtn}>Copiar</button>
         </div>
 
         {/* Instruções passo a passo */}
         <div style={{ marginTop: "1.5rem", padding: "1rem", background: "#f8f9fa", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
           <h4 style={{ margin: "0 0 0.75rem 0", fontSize: "0.9rem" }}>
-            Passo a passo {isIC ? "(modelo IC — com Pi Zero 2W)" : "(modelo iM — RTMP nativo)"}
+            Passo a passo {isIC ? "(modelo IC — com Pi Zero 2W)" : ""}
           </h4>
 
           {isIC ? (
@@ -254,7 +229,7 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
                 <strong>Pi Zero 2W (bridge):</strong> Conecte o Pi Zero à mesma rede do PDV.
                 Configure o FFmpeg para converter o stream RTSP para RTMP:
                 <div style={{ ...fieldStyle, marginTop: "0.4rem", fontSize: "0.75rem" }}>
-                  ffmpeg -rtsp_transport tcp -i rtsp://IP_CAMERA:554/... -c copy -f flv {rtmpUrl}
+                  ffmpeg -rtsp_transport tcp -i rtsp://IP_CAMERA:554/... -c copy -f flv {rtmpPublicUrl}
                 </div>
               </li>
               <li>
@@ -270,31 +245,16 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
                 Acesse <strong>Configuração RTMP</strong>.
               </li>
               <li>
-                Em <strong>Stream</strong>, selecione <strong>Econômica</strong> (recomendado para economia de banda)
-                ou <strong>Principal</strong> (melhor qualidade).
+                Em <strong>Stream</strong>, selecione <strong>Econômica</strong> (recomendado) ou <strong>Principal</strong> (melhor qualidade).
               </li>
               <li>
                 Selecione <strong>Personalizado</strong>.
               </li>
               <li>
-                No campo <strong>Endereço</strong>, cole:
+                No campo <strong>URL RTMP</strong>, cole a URL acima:
                 <div style={{ ...fieldStyle, marginTop: "0.4rem", fontSize: "0.75rem" }}>
-                  <span style={{ flex: 1 }}>{rtmpAddress}</span>
-                  <button onClick={() => copyToClipboard(rtmpAddress)} style={copyBtn}>Copiar</button>
-                </div>
-              </li>
-              <li>
-                No campo <strong>Porta</strong>, insira:
-                <div style={{ ...fieldStyle, marginTop: "0.4rem", fontSize: "0.75rem" }}>
-                  <span style={{ flex: 1 }}>{rtmpPort}</span>
-                  <button onClick={() => copyToClipboard(rtmpPort)} style={copyBtn}>Copiar</button>
-                </div>
-              </li>
-              <li>
-                No campo <strong>URL RTMP</strong>, cole a Stream Key:
-                <div style={{ ...fieldStyle, marginTop: "0.4rem", fontSize: "0.75rem" }}>
-                  <span style={{ flex: 1 }}>{camera.stream_key}</span>
-                  <button onClick={() => copyToClipboard(camera.stream_key)} style={copyBtn}>Copiar</button>
+                  <span style={{ flex: 1 }}>{rtmpPublicUrl}</span>
+                  <button onClick={() => copyToClipboard(rtmpPublicUrl)} style={copyBtn}>Copiar</button>
                 </div>
               </li>
               <li>
