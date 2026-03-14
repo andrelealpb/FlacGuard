@@ -3,6 +3,8 @@ set -e
 
 DEPLOY_DIR="/opt/happydo-guard"
 STATUS_FILE="$DEPLOY_DIR/deploy-status.json"
+# Also write to repo root for docker-compose volume mount
+REPO_STATUS_FILE="$DEPLOY_DIR/deploy-status.json"
 LOG_PREFIX="[deploy]"
 STARTED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
@@ -23,9 +25,17 @@ COMMIT_HASH=$(git rev-parse --short HEAD)
 COMMIT_MSG=$(git log -1 --pretty=%s)
 COMMIT_AUTHOR=$(git log -1 --pretty=%an)
 
-# Rebuild and restart containers
+# Rebuild and restart containers (pass git info as build args)
 echo "$LOG_PREFIX Building and restarting containers..."
-docker compose up -d --build --remove-orphans
+BUILD_TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+docker compose build \
+  --build-arg BUILD_COMMIT="$COMMIT_HASH" \
+  --build-arg BUILD_BRANCH="$BRANCH" \
+  --build-arg BUILD_TIMESTAMP="$BUILD_TIMESTAMP" \
+  --build-arg BUILD_AUTHOR="$COMMIT_AUTHOR" \
+  --build-arg BUILD_MESSAGE="$COMMIT_MSG" \
+  api
+docker compose up -d --remove-orphans
 
 # Wait for health checks
 echo "$LOG_PREFIX Waiting for services..."

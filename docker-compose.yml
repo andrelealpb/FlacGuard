@@ -26,6 +26,7 @@ services:
       - PULSE_PASSWORD=${PULSE_PASSWORD:-}
     volumes:
       - recordings:/data/recordings
+      - ./deploy-status.json:/app/deploy-status.json:ro
     depends_on:
       db:
         condition: service_healthy

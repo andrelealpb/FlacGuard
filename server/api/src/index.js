@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { readFileSync, readdirSync } from 'fs';
+import { readFileSync, readdirSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import rateLimit from 'express-rate-limit';
@@ -47,14 +47,35 @@ app.use('/api/settings', settingsRouter);
 // Nginx-RTMP callback hooks (internal, no /api prefix)
 app.use('/hooks', hooksRouter);
 
-// Deploy status — read from file written by deploy.sh
+// Deploy status — read from deploy-status.json (mounted) or build info
 app.get('/api/deploy-status', (_req, res) => {
-  try {
-    const data = readFileSync('/opt/happydo-guard/deploy-status.json', 'utf-8');
-    res.json(JSON.parse(data));
-  } catch {
-    res.json({ status: 'unknown', message: 'Nenhum deploy registrado ainda' });
+  // Try deploy-status.json from host (mounted volume)
+  const paths = [
+    '/opt/happydo-guard/deploy-status.json',
+    '/app/deploy-status.json',
+  ];
+  for (const p of paths) {
+    try {
+      if (existsSync(p)) {
+        const data = readFileSync(p, 'utf-8');
+        return res.json(JSON.parse(data));
+      }
+    } catch {
+      // try next
+    }
   }
+
+  // Fallback: read build info embedded at build time
+  try {
+    if (existsSync('/app/build-info.json')) {
+      const data = readFileSync('/app/build-info.json', 'utf-8');
+      return res.json({ status: 'ok', ...JSON.parse(data) });
+    }
+  } catch {
+    // ignore
+  }
+
+  res.json({ status: 'unknown', message: 'Nenhum deploy registrado ainda' });
 });
 
 // Health check

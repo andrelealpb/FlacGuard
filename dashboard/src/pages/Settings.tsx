@@ -15,6 +15,7 @@ interface DeployStatus {
   branch?: string;
   started_at?: string;
   finished_at?: string;
+  built_at?: string;
   message?: string;
 }
 
@@ -274,18 +275,18 @@ function Settings() {
                       fontSize: "0.8rem",
                       fontWeight: 600,
                       background:
-                        deploy.status === "success" ? "#e8f5e9"
+                        deploy.status === "success" || deploy.status === "ok" ? "#e8f5e9"
                         : deploy.status === "deploying" ? "#fff3e0"
                         : deploy.status === "degraded" ? "#ffebee"
                         : "#f5f5f5",
                       color:
-                        deploy.status === "success" ? "#2e7d32"
+                        deploy.status === "success" || deploy.status === "ok" ? "#2e7d32"
                         : deploy.status === "deploying" ? "#e65100"
                         : deploy.status === "degraded" ? "#c62828"
                         : "#666",
                     }}
                   >
-                    {deploy.status === "success" ? "OK" : deploy.status === "deploying" ? "Deployando..." : deploy.status === "degraded" ? "Degradado" : deploy.status}
+                    {deploy.status === "success" || deploy.status === "ok" ? "OK" : deploy.status === "deploying" ? "Deployando..." : deploy.status === "degraded" ? "Degradado" : deploy.status}
                   </span>
                 </td>
               </tr>
@@ -312,10 +313,10 @@ function Settings() {
                   <td><code style={{ fontSize: "0.8rem" }}>{deploy.branch}</code></td>
                 </tr>
               )}
-              {deploy.finished_at && (
+              {(deploy.finished_at || deploy.built_at) && (
                 <tr>
                   <td style={{ padding: "0.4rem 0", fontWeight: 600 }}>Quando</td>
-                  <td>{new Date(deploy.finished_at).toLocaleString("pt-BR")}</td>
+                  <td>{new Date(deploy.finished_at || deploy.built_at!).toLocaleString("pt-BR")}</td>
                 </tr>
               )}
               {deploy.message && (
