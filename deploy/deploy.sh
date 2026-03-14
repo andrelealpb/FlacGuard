@@ -17,7 +17,19 @@ echo "{\"status\":\"deploying\",\"started_at\":\"$STARTED_AT\"}" > "$STATUS_FILE
 echo "$LOG_PREFIX Pulling latest code..."
 git fetch origin
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+# Save checksum of this script before update
+SELF_HASH_BEFORE=$(md5sum "$0" 2>/dev/null | cut -d' ' -f1)
+
 git reset --hard "origin/$BRANCH"
+
+# Re-exec if deploy.sh itself was updated (bash keeps old version in memory)
+SELF_HASH_AFTER=$(md5sum "$DEPLOY_DIR/deploy/deploy.sh" 2>/dev/null | cut -d' ' -f1)
+if [ "$SELF_HASH_BEFORE" != "$SELF_HASH_AFTER" ] && [ "${DEPLOY_REEXEC:-}" != "1" ]; then
+  echo "$LOG_PREFIX deploy.sh was updated — re-executing with new version..."
+  export DEPLOY_REEXEC=1
+  exec bash "$DEPLOY_DIR/deploy/deploy.sh"
+fi
 
 COMMIT_HASH=$(git rev-parse --short HEAD)
 COMMIT_MSG=$(git log -1 --pretty=%s)
