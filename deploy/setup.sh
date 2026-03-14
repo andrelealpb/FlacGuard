@@ -3,7 +3,7 @@ set -e
 
 echo "=== HappyDo Guard - Deploy Webhook Setup ==="
 
-DEPLOY_DIR="/opt/happydo-guard"
+DEPLOY_DIR="/opt/HappyDoGuard"
 
 # Generate webhook secret if not set
 if ! grep -q WEBHOOK_SECRET "$DEPLOY_DIR/.env" 2>/dev/null; then

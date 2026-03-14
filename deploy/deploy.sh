@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-DEPLOY_DIR="/opt/happydo-guard"
+DEPLOY_DIR="/opt/HappyDoGuard"
 STATUS_FILE="$DEPLOY_DIR/deploy-status.json"
 # Also write to repo root for docker-compose volume mount
 REPO_STATUS_FILE="$DEPLOY_DIR/deploy-status.json"
