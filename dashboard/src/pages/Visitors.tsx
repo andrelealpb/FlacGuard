@@ -126,7 +126,10 @@ function Visitors() {
 
           <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
             {days.map((d) => {
-              const date = new Date(d.visit_date + "T12:00:00");
+              // visit_date can be "2026-03-14" or "2026-03-14T00:00:00.000Z"
+              const dateStr = typeof d.visit_date === "string" ? d.visit_date.split("T")[0] : d.visit_date;
+              const [y, m, day] = String(dateStr).split("-").map(Number);
+              const date = new Date(y, m - 1, day, 12, 0, 0);
               const dayLabel = date.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" });
               const pct = (d.total_visitors / maxVisitors) * 100;
 
@@ -154,7 +157,11 @@ function Visitors() {
           {days.length > 0 && days[0].by_camera && days[0].by_camera.length > 1 && (
             <div style={{ marginTop: "1rem", borderTop: "1px solid #eee", paddingTop: "0.75rem" }}>
               <div style={{ fontSize: "0.75rem", color: "#666", marginBottom: "0.35rem" }}>
-                Detalhamento ({new Date(days[0].visit_date + "T12:00:00").toLocaleDateString("pt-BR")})
+                Detalhamento ({(() => {
+                  const ds = String(days[0].visit_date).split("T")[0];
+                  const [y, m, day] = ds.split("-").map(Number);
+                  return new Date(y, m - 1, day, 12, 0, 0).toLocaleDateString("pt-BR");
+                })()})
               </div>
               <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
                 {days[0].by_camera.map((c) => (
