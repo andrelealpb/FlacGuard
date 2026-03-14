@@ -199,12 +199,24 @@ function VideoPlayer({
   const [detectedFaces, setDetectedFaces] = useState<DetectedFace[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [hoveredFace, setHoveredFace] = useState<number | null>(null);
+  const [faceError, setFaceError] = useState("");
   const lastDetectTime = useRef(-999);
+  const detectingRef = useRef(false);
+
+  const [faceServiceOk, setFaceServiceOk] = useState<boolean | null>(null);
+
+  // Check face service health once on mount
+  useEffect(() => {
+    apiFetch("/api/faces/status")
+      .then((r) => r.json())
+      .then((d) => setFaceServiceOk(d.service_available === true))
+      .catch(() => setFaceServiceOk(false));
+  }, []);
 
   const streamUrl = `/api/recordings/${recording.id}/stream?token=${encodeURIComponent(token)}`;
 
   useEffect(() => {
-    setCurrent(0); setDuration(0); setError(""); setDetectedFaces([]); lastDetectTime.current = -999;
+    setCurrent(0); setDuration(0); setError(""); setDetectedFaces([]); setFaceError(""); lastDetectTime.current = -999;
     const v = videoRef.current;
     if (v) { v.playbackRate = speed; v.load(); v.play().catch(() => {}); }
   }, [recording.id]);
@@ -212,11 +224,11 @@ function VideoPlayer({
 
   // Detect faces when video is paused or every ~3 seconds
   useEffect(() => {
-    if (!faceDetectOn) { setDetectedFaces([]); return; }
+    if (!faceDetectOn) { setDetectedFaces([]); setFaceError(""); return; }
 
     const interval = setInterval(() => {
       const v = videoRef.current;
-      if (!v || v.paused || detecting) return;
+      if (!v || v.paused || detectingRef.current) return;
       const t = v.currentTime;
       if (Math.abs(t - lastDetectTime.current) < 2.5) return; // debounce
       lastDetectTime.current = t;
@@ -224,10 +236,12 @@ function VideoPlayer({
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [faceDetectOn, recording.id, detecting]);
+  }, [faceDetectOn, recording.id]);
 
   const runDetection = async (timestamp: number) => {
     setDetecting(true);
+    detectingRef.current = true;
+    setFaceError("");
     try {
       const res = await apiFetch(`/api/recordings/${recording.id}/detect-faces`, {
         method: "POST",
@@ -237,9 +251,17 @@ function VideoPlayer({
       if (res.ok) {
         const data = await res.json();
         setDetectedFaces(data.faces || []);
+      } else {
+        const err = await res.json().catch(() => ({ error: `Erro ${res.status}` }));
+        setFaceError(err.error || `Erro ${res.status}`);
+        setDetectedFaces([]);
       }
-    } catch { /* ignore */ }
+    } catch {
+      setFaceError("Serviço de detecção indisponível");
+      setDetectedFaces([]);
+    }
     setDetecting(false);
+    detectingRef.current = false;
   };
 
   // Manual detection on pause
@@ -385,11 +407,12 @@ function VideoPlayer({
         {faceDetectOn && (
           <div style={{ position: "absolute", top: 6, left: 6, display: "flex", gap: "0.35rem", alignItems: "center" }}>
             <div style={{
-              background: detecting ? "rgba(255,235,59,0.9)" : "rgba(76,175,80,0.9)",
-              color: "#000", padding: "0.15rem 0.4rem", borderRadius: "3px",
+              background: faceError ? "rgba(198,40,40,0.9)" : detecting ? "rgba(255,235,59,0.9)" : "rgba(76,175,80,0.9)",
+              color: faceError ? "#fff" : "#000", padding: "0.15rem 0.4rem", borderRadius: "3px",
               fontSize: "0.65rem", fontWeight: 600, fontFamily: "monospace",
+              maxWidth: "250px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
             }}>
-              {detecting ? "Detectando..." : `${detectedFaces.length} face(s)`}
+              {faceError ? faceError : detecting ? "Detectando..." : `${detectedFaces.length} face(s)`}
             </div>
           </div>
         )}
@@ -441,6 +464,7 @@ function VideoPlayer({
           {/* Face detection toggle */}
           <button
             onClick={() => {
+              if (faceServiceOk === false) return;
               const next = !faceDetectOn;
               setFaceDetectOn(next);
               if (next && videoRef.current) runDetection(videoRef.current.currentTime);
@@ -448,11 +472,13 @@ function VideoPlayer({
             style={{
               ...cb,
               fontSize: "0.75rem",
-              background: faceDetectOn ? "rgba(76,175,80,0.3)" : "none",
+              background: faceDetectOn ? "rgba(76,175,80,0.3)" : faceServiceOk === false ? "rgba(198,40,40,0.3)" : "none",
               borderRadius: "3px",
               padding: "0.2rem 0.4rem",
+              opacity: faceServiceOk === false ? 0.4 : 0.85,
+              cursor: faceServiceOk === false ? "not-allowed" : "pointer",
             }}
-            title={faceDetectOn ? "Desativar detecção facial" : "Ativar detecção facial"}
+            title={faceServiceOk === false ? "Serviço de detecção facial indisponível" : faceDetectOn ? "Desativar detecção facial" : "Ativar detecção facial"}
           >
             &#128065;
           </button>
