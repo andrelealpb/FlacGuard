@@ -20,6 +20,9 @@ interface Camera {
   pdv_id: string;
   pdv_name: string;
   pdv_code: string | null;
+  recording_mode: string;
+  retention_days: number;
+  motion_sensitivity: number;
   rtmp_url?: string;
   hls_url?: string;
   rtmp_public_url?: string;
@@ -39,6 +42,13 @@ interface CameraForm {
   model: string;
   pdv_id: string;
   location_description: string;
+  recording_mode: string;
+  retention_days: number;
+  motion_sensitivity: number;
+}
+
+interface DiskUsageMap {
+  [cameraId: string]: { total_bytes: string; recording_count: number };
 }
 
 const emptyForm: CameraForm = {
@@ -46,7 +56,17 @@ const emptyForm: CameraForm = {
   model: "iM5 SC",
   pdv_id: "",
   location_description: "",
+  recording_mode: "continuous",
+  retention_days: 21,
+  motion_sensitivity: 5,
 };
+
+function formatBytes(bytes: number) {
+  if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + " GB";
+  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + " MB";
+  if (bytes >= 1024) return (bytes / 1024).toFixed(0) + " KB";
+  return bytes + " B";
+}
 
 function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => void }) {
   const rtmpPublicUrl = camera.rtmp_public_url || "";
@@ -146,6 +166,32 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
               <span style={{ flex: 1 }}>{camera.pdv_code ? `[${camera.pdv_code}] ` : ""}{camera.pdv_name}</span>
             </div>
           </div>
+        </div>
+
+        {/* Recording settings summary */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.5rem 1rem", marginTop: "0.5rem" }}>
+          <div>
+            <div style={sectionTitle}>Gravação</div>
+            <div style={fieldStyle}>
+              <span style={{ flex: 1 }}>
+                {camera.recording_mode === "motion" ? "Por movimento" : "Contínua"}
+              </span>
+            </div>
+          </div>
+          <div>
+            <div style={sectionTitle}>Retenção</div>
+            <div style={fieldStyle}>
+              <span style={{ flex: 1 }}>{camera.retention_days} dias</span>
+            </div>
+          </div>
+          {camera.recording_mode === "motion" && (
+            <div>
+              <div style={sectionTitle}>Sensibilidade</div>
+              <div style={fieldStyle}>
+                <span style={{ flex: 1 }}>{camera.motion_sensitivity}%</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {camera.location_description && (
@@ -306,17 +352,24 @@ function Cameras() {
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState("");
   const [infoCamera, setInfoCamera] = useState<Camera | null>(null);
+  const [diskUsage, setDiskUsage] = useState<DiskUsageMap>({});
 
   const loadData = () => {
     Promise.all([
       apiFetch("/api/cameras").then((r) => r.json()),
       apiFetch("/api/pdvs").then((r) => r.json()),
       apiFetch("/api/cameras/models").then((r) => r.json()),
+      apiFetch("/api/cameras/disk-usage").then((r) => r.json()),
     ])
-      .then(([cams, pdvList, modelList]) => {
+      .then(([cams, pdvList, modelList, usage]) => {
         setCameras(cams);
         setPdvs(pdvList);
         setModels(modelList);
+        const usageMap: DiskUsageMap = {};
+        for (const u of usage) {
+          usageMap[u.camera_id] = { total_bytes: u.total_bytes, recording_count: u.recording_count };
+        }
+        setDiskUsage(usageMap);
       })
       .catch(console.error);
   };
@@ -379,6 +432,9 @@ function Cameras() {
       model: camera.model,
       pdv_id: camera.pdv_id,
       location_description: camera.location_description || "",
+      recording_mode: camera.recording_mode || "continuous",
+      retention_days: camera.retention_days || 21,
+      motion_sensitivity: camera.motion_sensitivity || 5,
     });
     setEditingId(camera.id);
     setShowForm(true);
@@ -437,6 +493,15 @@ function Cameras() {
     display: "inline-block" as const,
     background: status === "online" ? "#4caf50" : status === "error" ? "#ff9800" : "#bdbdbd",
     marginRight: "0.4rem",
+  });
+
+  const recModeBadge = (mode: string) => ({
+    padding: "0.15rem 0.4rem",
+    borderRadius: "3px",
+    fontSize: "0.65rem",
+    fontWeight: 600 as const,
+    background: mode === "motion" ? "#fff3e0" : "#e8f5e9",
+    color: mode === "motion" ? "#e65100" : "#2e7d32",
   });
 
   const btnStyle = {
@@ -512,7 +577,7 @@ function Cameras() {
           borderRadius: "8px",
           padding: "1.5rem",
           marginBottom: "1.5rem",
-          maxWidth: "600px",
+          maxWidth: "700px",
         }}>
           <h3 style={{ margin: "0 0 1rem 0" }}>
             {editingId ? "Editar Câmera" : "Nova Câmera"}
@@ -590,6 +655,75 @@ function Cameras() {
                 )}
               </div>
 
+              {/* Recording Mode + Retention + Sensitivity row */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.75rem" }}>
+                {/* Recording Mode */}
+                <div>
+                  <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.25rem" }}>
+                    Modo de gravação
+                  </label>
+                  <select
+                    value={form.recording_mode}
+                    onChange={(e) => setForm({ ...form, recording_mode: e.target.value })}
+                    style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", border: "1px solid #ccc" }}
+                  >
+                    <option value="continuous">Contínua (24/7)</option>
+                    <option value="motion">Por movimento</option>
+                  </select>
+                  <div style={{ fontSize: "0.7rem", color: "#666", marginTop: "0.2rem" }}>
+                    {form.recording_mode === "motion"
+                      ? "Grava apenas quando detecta movimento (~80-90% economia)"
+                      : "Grava continuamente enquanto online"}
+                  </div>
+                </div>
+
+                {/* Retention Days */}
+                <div>
+                  <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.25rem" }}>
+                    Retenção (dias)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={60}
+                    value={form.retention_days}
+                    onChange={(e) => setForm({ ...form, retention_days: Math.min(60, Math.max(1, parseInt(e.target.value) || 21)) })}
+                    style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", border: "1px solid #ccc", boxSizing: "border-box" }}
+                  />
+                  <div style={{ fontSize: "0.7rem", color: "#666", marginTop: "0.2rem" }}>
+                    Padrão: 21 dias | Máximo: 60 dias
+                  </div>
+                </div>
+
+                {/* Motion Sensitivity (only when motion mode) */}
+                <div>
+                  <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.25rem" }}>
+                    Sensibilidade (%)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={form.motion_sensitivity}
+                    onChange={(e) => setForm({ ...form, motion_sensitivity: Math.min(100, Math.max(1, parseInt(e.target.value) || 5)) })}
+                    disabled={form.recording_mode !== "motion"}
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem",
+                      borderRadius: "4px",
+                      border: "1px solid #ccc",
+                      boxSizing: "border-box",
+                      opacity: form.recording_mode !== "motion" ? 0.5 : 1,
+                    }}
+                  />
+                  <div style={{ fontSize: "0.7rem", color: "#666", marginTop: "0.2rem" }}>
+                    {form.recording_mode === "motion"
+                      ? "Menor = mais sensível"
+                      : "Disponível no modo movimento"}
+                  </div>
+                </div>
+              </div>
+
               {/* Localização */}
               <div>
                 <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.25rem" }}>
@@ -633,53 +767,68 @@ function Cameras() {
                 <th style={{ padding: "0.75rem 1rem" }}>Nome</th>
                 <th style={{ padding: "0.75rem 1rem" }}>Modelo</th>
                 <th style={{ padding: "0.75rem 1rem" }}>PDV</th>
-                <th style={{ padding: "0.75rem 1rem" }}>Localização</th>
-                <th style={{ padding: "0.75rem 1rem" }}>Stream Key</th>
+                <th style={{ padding: "0.75rem 1rem" }}>Gravação</th>
+                <th style={{ padding: "0.75rem 1rem" }}>Retenção</th>
+                <th style={{ padding: "0.75rem 1rem" }}>Disco</th>
                 <th style={{ padding: "0.75rem 1rem" }}>Ações</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((cam) => (
-                <tr key={cam.id} style={{ borderTop: "1px solid #eee" }}>
-                  <td style={{ padding: "0.6rem 1rem" }}>
-                    <span style={statusDot(cam.status)} />
-                    {cam.status}
-                  </td>
-                  <td style={{ padding: "0.6rem 1rem", fontWeight: 500 }}>{cam.name}</td>
-                  <td style={{ padding: "0.6rem 1rem" }}>
-                    <span style={groupBadge(cam.camera_group)}>{cam.camera_group.toUpperCase()}</span>
-                    {" "}{cam.model}
-                  </td>
-                  <td style={{ padding: "0.6rem 1rem" }}>
-                    {cam.pdv_code ? `[${cam.pdv_code}] ` : ""}{cam.pdv_name}
-                  </td>
-                  <td style={{ padding: "0.6rem 1rem", color: "#666" }}>
-                    {cam.location_description || "—"}
-                  </td>
-                  <td style={{ padding: "0.6rem 1rem" }}>
-                    <code style={{ fontSize: "0.75rem", background: "#f5f5f5", padding: "0.15rem 0.4rem", borderRadius: "3px" }}>
-                      {cam.stream_key.slice(0, 12)}...
-                    </code>
-                  </td>
-                  <td style={{ padding: "0.6rem 1rem" }}>
-                    <div style={{ display: "flex", gap: "0.3rem" }}>
-                      <button
-                        onClick={() => handleInfo(cam)}
-                        title="Instruções de configuração"
-                        style={{ ...btnStyle, fontSize: "0.75rem", padding: "0.25rem 0.5rem", color: "#1565c0" }}
-                      >
-                        &#9432; Config
-                      </button>
-                      <button onClick={() => handleEdit(cam)} style={{ ...btnStyle, fontSize: "0.75rem", padding: "0.25rem 0.5rem" }}>
-                        Editar
-                      </button>
-                      <button onClick={() => handleDelete(cam)} style={{ ...btnStyle, fontSize: "0.75rem", padding: "0.25rem 0.5rem", color: "#c62828" }}>
-                        Excluir
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {filtered.map((cam) => {
+                const usage = diskUsage[cam.id];
+                const totalBytes = usage ? parseInt(usage.total_bytes) : 0;
+                return (
+                  <tr key={cam.id} style={{ borderTop: "1px solid #eee" }}>
+                    <td style={{ padding: "0.6rem 1rem" }}>
+                      <span style={statusDot(cam.status)} />
+                      {cam.status}
+                    </td>
+                    <td style={{ padding: "0.6rem 1rem", fontWeight: 500 }}>{cam.name}</td>
+                    <td style={{ padding: "0.6rem 1rem" }}>
+                      <span style={groupBadge(cam.camera_group)}>{cam.camera_group.toUpperCase()}</span>
+                      {" "}{cam.model}
+                    </td>
+                    <td style={{ padding: "0.6rem 1rem" }}>
+                      {cam.pdv_code ? `[${cam.pdv_code}] ` : ""}{cam.pdv_name}
+                    </td>
+                    <td style={{ padding: "0.6rem 1rem" }}>
+                      <span style={recModeBadge(cam.recording_mode)}>
+                        {cam.recording_mode === "motion" ? "Movimento" : "Contínua"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "0.6rem 1rem", fontSize: "0.8rem" }}>
+                      {cam.retention_days}d
+                    </td>
+                    <td style={{ padding: "0.6rem 1rem" }}>
+                      <div style={{ fontSize: "0.8rem", fontFamily: "monospace" }}>
+                        {totalBytes > 0 ? formatBytes(totalBytes) : "—"}
+                      </div>
+                      {usage && usage.recording_count > 0 && (
+                        <div style={{ fontSize: "0.65rem", color: "#999" }}>
+                          {usage.recording_count} gravações
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: "0.6rem 1rem" }}>
+                      <div style={{ display: "flex", gap: "0.3rem" }}>
+                        <button
+                          onClick={() => handleInfo(cam)}
+                          title="Instruções de configuração"
+                          style={{ ...btnStyle, fontSize: "0.75rem", padding: "0.25rem 0.5rem", color: "#1565c0" }}
+                        >
+                          Config
+                        </button>
+                        <button onClick={() => handleEdit(cam)} style={{ ...btnStyle, fontSize: "0.75rem", padding: "0.25rem 0.5rem" }}>
+                          Editar
+                        </button>
+                        <button onClick={() => handleDelete(cam)} style={{ ...btnStyle, fontSize: "0.75rem", padding: "0.25rem 0.5rem", color: "#c62828" }}>
+                          Excluir
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

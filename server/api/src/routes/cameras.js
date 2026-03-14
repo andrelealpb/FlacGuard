@@ -41,7 +41,13 @@ router.get('/', authenticate, async (req, res) => {
        ${where} ORDER BY p.name, c.name`,
       params
     );
-    res.json(rows);
+    // Ensure new columns have defaults for cameras created before migration
+    res.json(rows.map(r => ({
+      ...r,
+      recording_mode: r.recording_mode || 'continuous',
+      retention_days: r.retention_days || 21,
+      motion_sensitivity: r.motion_sensitivity || 5,
+    })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -66,13 +72,22 @@ router.get('/models', authenticate, (_req, res) => {
 // POST /api/cameras — Register new camera
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { name, pdv_id, model, location_description } = req.body;
+    const { name, pdv_id, model, location_description, recording_mode, retention_days, motion_sensitivity } = req.body;
 
     if (!name || !pdv_id || !model) {
       return res.status(400).json({ error: 'name, pdv_id and model are required' });
     }
     if (!VALID_MODELS.includes(model)) {
       return res.status(400).json({ error: `Invalid model. Must be one of: ${VALID_MODELS.join(', ')}` });
+    }
+    if (recording_mode && !['continuous', 'motion'].includes(recording_mode)) {
+      return res.status(400).json({ error: 'recording_mode must be "continuous" or "motion"' });
+    }
+    if (retention_days !== undefined && (retention_days < 1 || retention_days > 60)) {
+      return res.status(400).json({ error: 'retention_days must be between 1 and 60' });
+    }
+    if (motion_sensitivity !== undefined && (motion_sensitivity < 1 || motion_sensitivity > 100)) {
+      return res.status(400).json({ error: 'motion_sensitivity must be between 1 and 100' });
     }
 
     // Verify PDV exists
@@ -85,10 +100,11 @@ router.post('/', authenticate, async (req, res) => {
     const camera_group = groupFromModel(model);
 
     const { rows } = await pool.query(
-      `INSERT INTO cameras (name, stream_key, model, camera_group, location_description, pdv_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO cameras (name, stream_key, model, camera_group, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [name, streamKey, model, camera_group, location_description, pdv_id]
+      [name, streamKey, model, camera_group, location_description, pdv_id,
+       recording_mode || 'continuous', retention_days || 21, motion_sensitivity || 5]
     );
     const camera = rows[0];
     res.status(201).json({
@@ -129,7 +145,7 @@ router.get('/:id', authenticate, async (req, res) => {
 // PATCH /api/cameras/:id — Update camera
 router.patch('/:id', authenticate, async (req, res) => {
   try {
-    const { name, model, location_description, pdv_id } = req.body;
+    const { name, model, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity } = req.body;
 
     if (model && !VALID_MODELS.includes(model)) {
       return res.status(400).json({ error: `Invalid model. Must be one of: ${VALID_MODELS.join(', ')}` });
@@ -139,6 +155,15 @@ router.patch('/:id', authenticate, async (req, res) => {
       if (pdvCheck.rows.length === 0) {
         return res.status(400).json({ error: 'PDV not found' });
       }
+    }
+    if (recording_mode && !['continuous', 'motion'].includes(recording_mode)) {
+      return res.status(400).json({ error: 'recording_mode must be "continuous" or "motion"' });
+    }
+    if (retention_days !== undefined && (retention_days < 1 || retention_days > 60)) {
+      return res.status(400).json({ error: 'retention_days must be between 1 and 60' });
+    }
+    if (motion_sensitivity !== undefined && (motion_sensitivity < 1 || motion_sensitivity > 100)) {
+      return res.status(400).json({ error: 'motion_sensitivity must be between 1 and 100' });
     }
 
     const camera_group = model ? groupFromModel(model) : undefined;
@@ -150,9 +175,13 @@ router.patch('/:id', authenticate, async (req, res) => {
          camera_group = COALESCE($4, camera_group),
          location_description = COALESCE($5, location_description),
          pdv_id = COALESCE($6, pdv_id),
+         recording_mode = COALESCE($7, recording_mode),
+         retention_days = COALESCE($8, retention_days),
+         motion_sensitivity = COALESCE($9, motion_sensitivity),
          updated_at = now()
        WHERE id = $1 RETURNING *`,
-      [req.params.id, name, model, camera_group, location_description, pdv_id]
+      [req.params.id, name, model, camera_group, location_description, pdv_id,
+       recording_mode, retention_days, motion_sensitivity]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
     res.json(rows[0]);
@@ -234,6 +263,45 @@ router.get('/:id/recording', authenticate, async (req, res) => {
     );
     if (!recording) return res.status(404).json({ error: 'No recording found for this timestamp' });
     res.json(recording);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/cameras/stream-names — Map stream keys to camera names (for RTMP stats)
+router.get('/stream-names', authenticate, async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT stream_key, name, c.id as camera_id, p.name as pdv_name
+       FROM cameras c JOIN pdvs p ON c.pdv_id = p.id`
+    );
+    const map = {};
+    for (const row of rows) {
+      map[row.stream_key] = {
+        name: row.name,
+        pdv_name: row.pdv_name,
+        camera_id: row.camera_id,
+      };
+    }
+    res.json(map);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/cameras/disk-usage — Disk usage per camera
+router.get('/disk-usage', authenticate, async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT c.id as camera_id, c.name, c.retention_days,
+              COALESCE(SUM(r.file_size), 0)::bigint as total_bytes,
+              COUNT(r.id)::int as recording_count
+       FROM cameras c
+       LEFT JOIN recordings r ON r.camera_id = c.id
+       GROUP BY c.id, c.name, c.retention_days
+       ORDER BY total_bytes DESC`
+    );
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

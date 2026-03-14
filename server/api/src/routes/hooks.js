@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
+import { onCameraOnline, onCameraOffline } from '../services/motion-detector.js';
+import { startContinuousRecording, stopRecording } from '../services/recorder.js';
 
 const router = Router();
 
@@ -10,7 +12,7 @@ router.get('/on-publish', async (req, res) => {
 
     // Validate stream key
     const { rows } = await pool.query(
-      'SELECT id FROM cameras WHERE stream_key = $1',
+      'SELECT id, recording_mode, name FROM cameras WHERE stream_key = $1',
       [streamKey]
     );
 
@@ -18,6 +20,8 @@ router.get('/on-publish', async (req, res) => {
       console.log(`Rejected unknown stream key: ${streamKey} from ${addr}`);
       return res.status(403).end();
     }
+
+    const camera = rows[0];
 
     // Update camera status to online
     await pool.query(
@@ -30,10 +34,31 @@ router.get('/on-publish', async (req, res) => {
     await pool.query(
       `INSERT INTO events (camera_id, type, payload)
        VALUES ($1, 'online', $2)`,
-      [rows[0].id, JSON.stringify({ addr })]
+      [camera.id, JSON.stringify({ addr })]
     );
 
-    console.log(`Stream started: ${streamKey} from ${addr}`);
+    // Notify motion detector that camera is online
+    onCameraOnline(camera.id);
+
+    // Start continuous recording if configured
+    if (camera.recording_mode === 'continuous') {
+      // Delay slightly to let HLS segments build up
+      setTimeout(async () => {
+        try {
+          const { rows: camRows } = await pool.query(
+            'SELECT id, name, stream_key, recording_mode FROM cameras WHERE id = $1',
+            [camera.id]
+          );
+          if (camRows.length > 0 && camRows[0].recording_mode === 'continuous') {
+            startContinuousRecording(camRows[0]);
+          }
+        } catch (err) {
+          console.error(`Error starting continuous recording for ${camera.name}:`, err.message);
+        }
+      }, 15000); // Wait 15s for HLS segments to be available
+    }
+
+    console.log(`Stream started: ${streamKey} (${camera.name}) from ${addr}`);
     res.status(200).end();
   } catch (err) {
     console.error('on-publish error:', err.message);
@@ -48,7 +73,7 @@ router.get('/on-publish-done', async (req, res) => {
 
     const { rows } = await pool.query(
       `UPDATE cameras SET status = 'offline', updated_at = now()
-       WHERE stream_key = $1 RETURNING id`,
+       WHERE stream_key = $1 RETURNING id, name`,
       [streamKey]
     );
 
@@ -57,6 +82,10 @@ router.get('/on-publish-done', async (req, res) => {
         `INSERT INTO events (camera_id, type, payload) VALUES ($1, 'offline', '{}')`,
         [rows[0].id]
       );
+
+      // Notify motion detector and stop any recording
+      onCameraOffline(rows[0].id);
+      stopRecording(rows[0].id);
     }
 
     console.log(`Stream stopped: ${streamKey}`);
@@ -67,7 +96,7 @@ router.get('/on-publish-done', async (req, res) => {
   }
 });
 
-// GET /hooks/on-record-done — Called when a recording segment finishes
+// GET /hooks/on-record-done — Called when a recording segment finishes (nginx-rtmp native recording)
 router.get('/on-record-done', async (req, res) => {
   try {
     const { name: streamKey, path: filePath } = req.query;
@@ -79,8 +108,8 @@ router.get('/on-record-done', async (req, res) => {
 
     if (cameras.length > 0) {
       await pool.query(
-        `INSERT INTO recordings (camera_id, file_path, started_at)
-         VALUES ($1, $2, now())`,
+        `INSERT INTO recordings (camera_id, file_path, started_at, recording_type)
+         VALUES ($1, $2, now(), 'continuous')`,
         [cameras[0].id, filePath]
       );
     }

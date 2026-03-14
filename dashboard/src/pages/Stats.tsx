@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useAuth } from "../context/AuthContext";
 
 interface StreamInfo {
   name: string;
@@ -20,6 +21,14 @@ interface RtmpStats {
   bytes_in: string;
   bytes_out: string;
   streams: StreamInfo[];
+}
+
+interface StreamNameMap {
+  [streamKey: string]: {
+    name: string;
+    pdv_name: string;
+    camera_id: string;
+  };
 }
 
 function parseStats(xml: string): RtmpStats | null {
@@ -110,8 +119,18 @@ const cardStyle: React.CSSProperties = {
 };
 
 function Stats() {
+  const { apiFetch } = useAuth();
   const [stats, setStats] = useState<RtmpStats | null>(null);
+  const [streamNames, setStreamNames] = useState<StreamNameMap>({});
   const [error, setError] = useState("");
+
+  // Load stream name mapping
+  useEffect(() => {
+    apiFetch("/api/cameras/stream-names")
+      .then((res) => res.json())
+      .then(setStreamNames)
+      .catch(() => {});
+  }, []);
 
   const fetchStats = () => {
     fetch("/rtmp-stat")
@@ -134,6 +153,20 @@ function Stats() {
     return () => clearInterval(interval);
   }, []);
 
+  const getStreamDisplay = (streamKey: string) => {
+    const info = streamNames[streamKey];
+    if (info) {
+      return {
+        name: info.name,
+        pdv: info.pdv_name,
+      };
+    }
+    return {
+      name: streamKey.slice(0, 16) + "...",
+      pdv: null,
+    };
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
@@ -154,6 +187,10 @@ function Stats() {
       {stats && (
         <>
           <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap", marginBottom: "1.5rem" }}>
+            <div style={cardStyle}>
+              <div style={{ fontSize: "0.75rem", color: "#999", textTransform: "uppercase" }}>Streams</div>
+              <div style={{ fontSize: "1.5rem", fontWeight: 700, color: "#1a1a2e" }}>{stats.streams.length}</div>
+            </div>
             <div style={cardStyle}>
               <div style={{ fontSize: "0.75rem", color: "#999", textTransform: "uppercase" }}>Conexões</div>
               <div style={{ fontSize: "1.5rem", fontWeight: 700, color: "#1a1a2e" }}>{stats.naccepted}</div>
@@ -185,7 +222,7 @@ function Stats() {
             <table style={{ width: "100%", borderCollapse: "collapse", background: "#fff", borderRadius: "8px", overflow: "hidden", border: "1px solid #ddd" }}>
               <thead>
                 <tr style={{ background: "#1a1a2e", color: "#fff" }}>
-                  <th style={{ padding: "0.75rem 1rem", textAlign: "left", fontSize: "0.8rem" }}>Stream</th>
+                  <th style={{ padding: "0.75rem 1rem", textAlign: "left", fontSize: "0.8rem" }}>Câmera</th>
                   <th style={{ padding: "0.75rem 1rem", textAlign: "left", fontSize: "0.8rem" }}>Clients</th>
                   <th style={{ padding: "0.75rem 1rem", textAlign: "left", fontSize: "0.8rem" }}>BW In</th>
                   <th style={{ padding: "0.75rem 1rem", textAlign: "left", fontSize: "0.8rem" }}>BW Out</th>
@@ -195,21 +232,29 @@ function Stats() {
                 </tr>
               </thead>
               <tbody>
-                {stats.streams.map((s) => (
-                  <tr key={s.name} style={{ borderBottom: "1px solid #eee" }}>
-                    <td style={{ padding: "0.75rem 1rem", fontWeight: 600, color: "#2e7d32" }}>{s.name}</td>
-                    <td style={{ padding: "0.75rem 1rem" }}>{s.nclients}</td>
-                    <td style={{ padding: "0.75rem 1rem", fontFamily: "monospace" }}>{formatBw(s.bw_in)}</td>
-                    <td style={{ padding: "0.75rem 1rem", fontFamily: "monospace" }}>{formatBw(s.bw_out)}</td>
-                    <td style={{ padding: "0.75rem 1rem", fontSize: "0.85rem" }}>
-                      {s.video ? `${s.video.width}x${s.video.height} ${s.video.frame_rate}fps ${s.video.codec}` : "—"}
-                    </td>
-                    <td style={{ padding: "0.75rem 1rem", fontSize: "0.85rem" }}>
-                      {s.audio ? `${s.audio.codec} ${s.audio.sample_rate}Hz` : "—"}
-                    </td>
-                    <td style={{ padding: "0.75rem 1rem", fontFamily: "monospace" }}>{formatStreamTime(s.time)}</td>
-                  </tr>
-                ))}
+                {stats.streams.map((s) => {
+                  const display = getStreamDisplay(s.name);
+                  return (
+                    <tr key={s.name} style={{ borderBottom: "1px solid #eee" }}>
+                      <td style={{ padding: "0.75rem 1rem" }}>
+                        <div style={{ fontWeight: 600, color: "#2e7d32" }}>{display.name}</div>
+                        {display.pdv && (
+                          <div style={{ fontSize: "0.75rem", color: "#999" }}>{display.pdv}</div>
+                        )}
+                      </td>
+                      <td style={{ padding: "0.75rem 1rem" }}>{s.nclients}</td>
+                      <td style={{ padding: "0.75rem 1rem", fontFamily: "monospace" }}>{formatBw(s.bw_in)}</td>
+                      <td style={{ padding: "0.75rem 1rem", fontFamily: "monospace" }}>{formatBw(s.bw_out)}</td>
+                      <td style={{ padding: "0.75rem 1rem", fontSize: "0.85rem" }}>
+                        {s.video ? `${s.video.width}x${s.video.height} ${s.video.frame_rate}fps ${s.video.codec}` : "—"}
+                      </td>
+                      <td style={{ padding: "0.75rem 1rem", fontSize: "0.85rem" }}>
+                        {s.audio ? `${s.audio.codec} ${s.audio.sample_rate}Hz` : "—"}
+                      </td>
+                      <td style={{ padding: "0.75rem 1rem", fontFamily: "monospace" }}>{formatStreamTime(s.time)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
