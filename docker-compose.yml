@@ -71,5 +71,11 @@ services:
 
 volumes:
   pgdata:
+    external: true
+    name: happydo-guard_pgdata
   hls_data:
+    external: true
+    name: happydo-guard_hls_data
   recordings:
+    external: true
+    name: happydo-guard_recordings
