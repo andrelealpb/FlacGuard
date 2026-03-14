@@ -175,7 +175,16 @@ function VideoPlayer({
   // Stream URL with token as query param so <video> can authenticate
   const streamUrl = `/api/recordings/${recording.id}/stream?token=${encodeURIComponent(token)}`;
 
-  useEffect(() => { setPlaying(false); setSpeed(1); setCurrent(0); setDuration(0); setError(""); }, [recording.id]);
+  useEffect(() => {
+    setCurrent(0); setDuration(0); setError("");
+    // Auto-play when a new recording is selected
+    const v = videoRef.current;
+    if (v) {
+      v.playbackRate = speed;
+      v.load();
+      v.play().catch(() => {});
+    }
+  }, [recording.id]);
   useEffect(() => { if (videoRef.current) videoRef.current.playbackRate = speed; }, [speed]);
 
   const togglePlay = useCallback(() => {
