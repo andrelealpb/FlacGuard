@@ -29,6 +29,11 @@ function Settings() {
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
 
+  // Server/RTMP config
+  const [serverForm, setServerForm] = useState({ rtmp_public_host: "", rtmp_public_port: "1935" });
+  const [savingServer, setSavingServer] = useState(false);
+  const [serverMsg, setServerMsg] = useState<{ type: "ok" | "error"; text: string } | null>(null);
+
   const loadDeploy = () => {
     apiFetch("/api/deploy-status")
       .then((r) => r.json())
@@ -39,6 +44,12 @@ function Settings() {
   useEffect(() => {
     loadDeploy();
     if (!isAdmin) return;
+    apiFetch("/api/settings/server")
+      .then((r) => r.json())
+      .then((data) => {
+        setServerForm({ rtmp_public_host: data.rtmp_public_host || "", rtmp_public_port: data.rtmp_public_port || "1935" });
+      })
+      .catch(console.error);
     apiFetch("/api/settings/pulse")
       .then((r) => r.json())
       .then((data) => {
@@ -87,6 +98,29 @@ function Settings() {
       setMessage({ type: "error", text: "Erro de conexão" });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleSaveServer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingServer(true);
+    setServerMsg(null);
+    try {
+      const res = await apiFetch("/api/settings/server", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(serverForm),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setServerMsg({ type: "ok", text: data.message });
+      } else {
+        setServerMsg({ type: "error", text: data.error });
+      }
+    } catch {
+      setServerMsg({ type: "error", text: "Erro de conexão" });
+    } finally {
+      setSavingServer(false);
     }
   };
 
@@ -297,35 +331,80 @@ function Settings() {
         )}
       </div>
 
-      {/* RTMP Info */}
-      <div style={cardStyle}>
-        <h3 style={{ marginTop: 0 }}>Servidor RTMP</h3>
-        <table style={{ width: "100%", fontSize: "0.875rem" }}>
-          <tbody>
-            <tr>
-              <td style={{ padding: "0.5rem 0", fontWeight: 600 }}>Ingest URL</td>
-              <td style={{ fontFamily: "monospace" }}>rtmp://servidor:1935/live/</td>
-            </tr>
-            <tr>
-              <td style={{ padding: "0.5rem 0", fontWeight: 600 }}>HLS Playback</td>
-              <td style={{ fontFamily: "monospace" }}>http://servidor:8080/hls/</td>
-            </tr>
-            <tr>
-              <td style={{ padding: "0.5rem 0", fontWeight: 600 }}>Stats</td>
-              <td>
-                <a
-                  href="/hls/../stat"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: "#1a1a2e" }}
-                >
-                  Nginx-RTMP Stats (XML)
-                </a>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      {/* Server / RTMP Config */}
+      {isAdmin && (
+        <div style={cardStyle}>
+          <h3 style={{ marginTop: 0 }}>Servidor RTMP</h3>
+          <p style={{ fontSize: "0.8rem", color: "#666", marginTop: 0 }}>
+            Configure o IP ou domínio público do servidor. Este endereço será usado nas instruções de configuração das câmeras.
+          </p>
+
+          {serverMsg && (
+            <div
+              style={{
+                padding: "0.6rem 1rem",
+                marginBottom: "1rem",
+                borderRadius: "6px",
+                fontSize: "0.85rem",
+                background: serverMsg.type === "ok" ? "#e8f5e9" : "#ffebee",
+                color: serverMsg.type === "ok" ? "#2e7d32" : "#c62828",
+              }}
+            >
+              {serverMsg.text}
+            </div>
+          )}
+
+          <form onSubmit={handleSaveServer}>
+            <div style={{ display: "grid", gap: "0.75rem" }}>
+              <div>
+                <label style={labelStyle}>IP ou domínio público do servidor</label>
+                <input
+                  type="text"
+                  value={serverForm.rtmp_public_host}
+                  onChange={(e) => setServerForm({ ...serverForm, rtmp_public_host: e.target.value })}
+                  placeholder="Ex: 177.38.210.50 ou guard.happydo.com.br"
+                  required
+                  style={inputStyle}
+                />
+                <span style={{ fontSize: "0.75rem", color: "#888" }}>
+                  O IP público da VPS ou domínio apontando para ela. As câmeras vão se conectar neste endereço.
+                </span>
+              </div>
+
+              <div>
+                <label style={labelStyle}>Porta RTMP</label>
+                <input
+                  type="text"
+                  value={serverForm.rtmp_public_port}
+                  onChange={(e) => setServerForm({ ...serverForm, rtmp_public_port: e.target.value })}
+                  placeholder="1935"
+                  style={inputStyle}
+                />
+                <span style={{ fontSize: "0.75rem", color: "#888" }}>
+                  Padrão: 1935. Só altere se tiver redirecionamento de porta no firewall.
+                </span>
+              </div>
+            </div>
+
+            {serverForm.rtmp_public_host && (
+              <div style={{ marginTop: "0.75rem", padding: "0.75rem", background: "#f5f5f5", borderRadius: "6px" }}>
+                <div style={{ fontSize: "0.75rem", fontWeight: 600, color: "#333", marginBottom: "0.3rem" }}>
+                  URL RTMP que aparecerá nas câmeras:
+                </div>
+                <code style={{ fontSize: "0.8rem" }}>
+                  rtmp://{serverForm.rtmp_public_host}:{serverForm.rtmp_public_port}/live/&lt;stream_key&gt;
+                </code>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
+              <button type="submit" disabled={savingServer} style={btnPrimary}>
+                {savingServer ? "Salvando..." : "Salvar"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* System */}
       <div style={cardStyle}>
