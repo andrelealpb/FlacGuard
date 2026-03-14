@@ -27,7 +27,7 @@ router.get('/', authenticate, async (_req, res) => {
 // POST /api/pdvs/sync — Sync PDVs from HappyDoPulse API
 router.post('/sync', authenticate, async (_req, res) => {
   try {
-    if (!isPulseConfigured()) {
+    if (!(await isPulseConfigured())) {
       return res.status(400).json({
         error: 'Pulse credentials not configured. Set PULSE_EMAIL and PULSE_PASSWORD.',
       });
@@ -106,7 +106,7 @@ router.post('/sync', authenticate, async (_req, res) => {
 // GET /api/pdvs/pulse-status — Check Pulse integration status
 router.get('/pulse-status', authenticate, async (_req, res) => {
   res.json({
-    configured: isPulseConfigured(),
+    configured: await isPulseConfigured(),
     api_url: process.env.PULSE_API_URL || 'https://happydopulse-production.up.railway.app/api',
   });
 });

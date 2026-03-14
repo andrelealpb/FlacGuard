@@ -3,24 +3,47 @@
  *
  * Connects to HappyDoPulse to fetch PDV (store) data.
  * Auth: JWT-based (login → accessToken → refreshToken).
+ * Credentials can be set via DB (settings table) or env vars.
  */
 
-const PULSE_API_URL = process.env.PULSE_API_URL || 'https://happydopulse-production.up.railway.app/api';
-const PULSE_EMAIL = process.env.PULSE_EMAIL || '';
-const PULSE_PASSWORD = process.env.PULSE_PASSWORD || '';
+import { pool } from '../db/pool.js';
 
 let accessToken = null;
 let refreshToken = null;
 let tokenExpiresAt = 0;
 
 /**
+ * Read Pulse credentials from DB settings, falling back to env vars.
+ */
+async function getConfig() {
+  try {
+    const { rows } = await pool.query(
+      "SELECT key, value FROM settings WHERE key IN ('pulse_api_url', 'pulse_email', 'pulse_password')"
+    );
+    const map = Object.fromEntries(rows.map(r => [r.key, r.value]));
+    return {
+      apiUrl: map.pulse_api_url || process.env.PULSE_API_URL || 'https://happydopulse-production.up.railway.app/api',
+      email: map.pulse_email || process.env.PULSE_EMAIL || '',
+      password: map.pulse_password || process.env.PULSE_PASSWORD || '',
+    };
+  } catch {
+    return {
+      apiUrl: process.env.PULSE_API_URL || 'https://happydopulse-production.up.railway.app/api',
+      email: process.env.PULSE_EMAIL || '',
+      password: process.env.PULSE_PASSWORD || '',
+    };
+  }
+}
+
+/**
  * Login to Pulse API and store tokens.
  */
 async function login() {
-  const res = await fetch(`${PULSE_API_URL}/auth/login`, {
+  const config = await getConfig();
+  const res = await fetch(`${config.apiUrl}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: PULSE_EMAIL, password: PULSE_PASSWORD }),
+    body: JSON.stringify({ email: config.email, password: config.password }),
   });
 
   if (!res.ok) {
@@ -31,7 +54,6 @@ async function login() {
   const { data } = await res.json();
   accessToken = data.accessToken;
   refreshToken = data.refreshToken;
-  // Access token expires in 1h, refresh 5 min before
   tokenExpiresAt = Date.now() + 55 * 60 * 1000;
 }
 
@@ -43,14 +65,14 @@ async function refresh() {
     return login();
   }
 
-  const res = await fetch(`${PULSE_API_URL}/auth/refresh`, {
+  const config = await getConfig();
+  const res = await fetch(`${config.apiUrl}/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken }),
   });
 
   if (!res.ok) {
-    // Refresh failed, do a full login
     return login();
   }
 
@@ -78,8 +100,9 @@ async function getToken() {
  * Authenticated fetch to Pulse API.
  */
 async function pulseFetch(path, options = {}) {
+  const config = await getConfig();
   const token = await getToken();
-  const res = await fetch(`${PULSE_API_URL}${path}`, {
+  const res = await fetch(`${config.apiUrl}${path}`, {
     ...options,
     headers: {
       ...options.headers,
@@ -87,11 +110,10 @@ async function pulseFetch(path, options = {}) {
     },
   });
 
-  // If 401, try refreshing token once and retry
   if (res.status === 401) {
     await refresh();
     const retryToken = accessToken;
-    return fetch(`${PULSE_API_URL}${path}`, {
+    return fetch(`${config.apiUrl}${path}`, {
       ...options,
       headers: {
         ...options.headers,
@@ -105,7 +127,6 @@ async function pulseFetch(path, options = {}) {
 
 /**
  * Fetch all stores (PDVs) from Pulse, handling pagination.
- * Returns array of store objects.
  */
 export async function fetchAllStores() {
   const stores = [];
@@ -141,8 +162,42 @@ export async function fetchStoreById(storeId) {
 }
 
 /**
- * Check if Pulse credentials are configured.
+ * Check if Pulse credentials are configured (DB or env).
  */
-export function isPulseConfigured() {
-  return !!(PULSE_EMAIL && PULSE_PASSWORD);
+export async function isPulseConfigured() {
+  const config = await getConfig();
+  return !!(config.email && config.password);
+}
+
+/**
+ * Test Pulse connection by attempting login.
+ * Returns { ok, message }.
+ */
+export async function testPulseConnection() {
+  const config = await getConfig();
+  if (!config.email || !config.password) {
+    return { ok: false, message: 'Credenciais não configuradas' };
+  }
+
+  try {
+    const res = await fetch(`${config.apiUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: config.email, password: config.password }),
+    });
+
+    if (res.ok) {
+      const { data } = await res.json();
+      // Store the token for subsequent use
+      accessToken = data.accessToken;
+      refreshToken = data.refreshToken;
+      tokenExpiresAt = Date.now() + 55 * 60 * 1000;
+      return { ok: true, message: 'Conexão estabelecida com sucesso' };
+    }
+
+    const body = await res.json().catch(() => ({}));
+    return { ok: false, message: body.error?.message || `Erro HTTP ${res.status}` };
+  } catch (err) {
+    return { ok: false, message: `Falha na conexão: ${err.message}` };
+  }
 }

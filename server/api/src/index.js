@@ -10,6 +10,7 @@ import webhooksRouter from './routes/webhooks.js';
 import pdvsRouter from './routes/pdvs.js';
 import authRouter from './routes/auth.js';
 import hooksRouter from './routes/hooks.js';
+import settingsRouter from './routes/settings.js';
 import { pool } from './db/pool.js';
 
 const app = express();
@@ -36,6 +37,7 @@ app.use('/api/recordings', recordingsRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/webhooks', webhooksRouter);
 app.use('/api/pdvs', pdvsRouter);
+app.use('/api/settings', settingsRouter);
 
 // Nginx-RTMP callback hooks (internal, no /api prefix)
 app.use('/hooks', hooksRouter);

@@ -96,6 +96,13 @@ CREATE TABLE api_keys (
   created_at TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
+-- Settings (key-value config, e.g. Pulse credentials)
+CREATE TABLE settings (
+  key        VARCHAR(100) PRIMARY KEY,
+  value      TEXT         NOT NULL,
+  updated_at TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
 -- Webhooks
 CREATE TABLE webhooks (
   id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
