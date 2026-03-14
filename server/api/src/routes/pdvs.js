@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { authenticate } from '../services/auth.js';
+import { fetchAllStores, isPulseConfigured } from '../services/pulse.js';
 
 const router = Router();
 
@@ -23,14 +24,101 @@ router.get('/', authenticate, async (_req, res) => {
   }
 });
 
+// POST /api/pdvs/sync — Sync PDVs from HappyDoPulse API
+router.post('/sync', authenticate, async (_req, res) => {
+  try {
+    if (!(await isPulseConfigured())) {
+      return res.status(400).json({
+        error: 'Pulse credentials not configured. Set PULSE_EMAIL and PULSE_PASSWORD.',
+      });
+    }
+
+    const stores = await fetchAllStores();
+    let created = 0;
+    let updated = 0;
+
+    for (const store of stores) {
+      const { rows } = await pool.query(
+        'SELECT id FROM pdvs WHERE pulse_id = $1',
+        [store.id]
+      );
+
+      if (rows.length === 0) {
+        // Insert new PDV
+        await pool.query(
+          `INSERT INTO pdvs (pulse_id, code, name, address, bairro, city, state, cep, bandeira, latitude, longitude, is_active, pulse_synced_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())`,
+          [
+            store.id,
+            store.code,
+            store.name,
+            store.address || '',
+            store.bairro,
+            store.cidade || 'João Pessoa',
+            store.estado || 'PB',
+            store.cep,
+            store.bandeira,
+            store.latitude ? parseFloat(store.latitude) : null,
+            store.longitude ? parseFloat(store.longitude) : null,
+            store.active,
+          ]
+        );
+        created++;
+      } else {
+        // Update existing PDV
+        await pool.query(
+          `UPDATE pdvs SET
+             code = $2, name = $3, address = $4, bairro = $5,
+             city = $6, state = $7, cep = $8, bandeira = $9,
+             latitude = $10, longitude = $11, is_active = $12,
+             pulse_synced_at = now(), updated_at = now()
+           WHERE pulse_id = $1`,
+          [
+            store.id,
+            store.code,
+            store.name,
+            store.address || '',
+            store.bairro,
+            store.cidade || 'João Pessoa',
+            store.estado || 'PB',
+            store.cep,
+            store.bandeira,
+            store.latitude ? parseFloat(store.latitude) : null,
+            store.longitude ? parseFloat(store.longitude) : null,
+            store.active,
+          ]
+        );
+        updated++;
+      }
+    }
+
+    res.json({
+      message: 'Sync completed',
+      total_from_pulse: stores.length,
+      created,
+      updated,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/pdvs/pulse-status — Check Pulse integration status
+router.get('/pulse-status', authenticate, async (_req, res) => {
+  res.json({
+    configured: await isPulseConfigured(),
+    api_url: process.env.PULSE_API_URL || 'https://happydopulse-production.up.railway.app/api',
+  });
+});
+
 // POST /api/pdvs
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { name, address, city = 'João Pessoa', state = 'PB' } = req.body;
+    const { name, address, city = 'João Pessoa', state = 'PB', bairro, cep, bandeira } = req.body;
     const { rows } = await pool.query(
-      `INSERT INTO pdvs (name, address, city, state)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [name, address, city, state]
+      `INSERT INTO pdvs (name, address, city, state, bairro, cep, bandeira)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [name, address, city, state, bairro, cep, bandeira]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -45,7 +133,8 @@ router.get('/:id', authenticate, async (req, res) => {
       `SELECT p.*,
          json_agg(json_build_object(
            'id', c.id, 'name', c.name, 'status', c.status,
-           'stream_key', c.stream_key, 'model', c.model
+           'stream_key', c.stream_key, 'model', c.model,
+           'camera_group', c.camera_group, 'location_description', c.location_description
          )) FILTER (WHERE c.id IS NOT NULL) as cameras
        FROM pdvs p
        LEFT JOIN cameras c ON c.pdv_id = p.id

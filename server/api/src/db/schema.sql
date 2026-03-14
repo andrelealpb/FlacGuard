@@ -3,26 +3,40 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- PDVs (Pontos de Venda / mercadinhos autônomos)
+-- Synced from HappyDoPulse API
 CREATE TABLE pdvs (
-  id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name       VARCHAR(255) NOT NULL,
-  address    VARCHAR(500) NOT NULL,
-  city       VARCHAR(100) NOT NULL DEFAULT 'João Pessoa',
-  state      VARCHAR(2)   NOT NULL DEFAULT 'PB',
-  is_active  BOOLEAN      NOT NULL DEFAULT true,
-  created_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ  NOT NULL DEFAULT now()
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  pulse_id        UUID         UNIQUE,
+  code            VARCHAR(20),
+  name            VARCHAR(255) NOT NULL,
+  address         VARCHAR(500) NOT NULL,
+  bairro          VARCHAR(100),
+  city            VARCHAR(100) NOT NULL DEFAULT 'João Pessoa',
+  state           VARCHAR(2)   NOT NULL DEFAULT 'PB',
+  cep             VARCHAR(10),
+  bandeira        VARCHAR(255),
+  latitude        DECIMAL(10,8),
+  longitude       DECIMAL(11,8),
+  is_active       BOOLEAN      NOT NULL DEFAULT true,
+  pulse_synced_at TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
+
+CREATE INDEX idx_pdvs_pulse_id ON pdvs(pulse_id);
 
 -- Câmeras
 CREATE TABLE cameras (
   id                   UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name                 VARCHAR(255) NOT NULL,
   stream_key           VARCHAR(64)  NOT NULL UNIQUE,
-  model                VARCHAR(100) NOT NULL DEFAULT 'MIBO Intelbras',
-  camera_group         VARCHAR(10)  NOT NULL DEFAULT 'im' CHECK (camera_group IN ('im', 'ic')),
+  model                VARCHAR(100) NOT NULL DEFAULT 'iM5 SC'
+    CHECK (model IN ('iM3 C', 'iM5 SC', 'iMX', 'IC3', 'IC5')),
+  camera_group         VARCHAR(10)  NOT NULL DEFAULT 'im'
+    CHECK (camera_group IN ('im', 'ic')),
   location_description VARCHAR(500),
-  status               VARCHAR(20)  NOT NULL DEFAULT 'offline' CHECK (status IN ('online', 'offline', 'error')),
+  status               VARCHAR(20)  NOT NULL DEFAULT 'offline'
+    CHECK (status IN ('online', 'offline', 'error')),
   pdv_id               UUID         NOT NULL REFERENCES pdvs(id),
   last_seen_at         TIMESTAMPTZ,
   created_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
@@ -80,6 +94,13 @@ CREATE TABLE api_keys (
   name       VARCHAR(255) NOT NULL,
   is_active  BOOLEAN      NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+-- Settings (key-value config, e.g. Pulse credentials)
+CREATE TABLE settings (
+  key        VARCHAR(100) PRIMARY KEY,
+  value      TEXT         NOT NULL,
+  updated_at TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
 -- Webhooks

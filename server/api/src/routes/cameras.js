@@ -6,10 +6,17 @@ import { findRecordingByTimestamp, listRecordings } from '../services/recording.
 
 const router = Router();
 
+const VALID_MODELS = ['iM3 C', 'iM5 SC', 'iMX', 'IC3', 'IC5'];
+
+// Derive camera_group from model
+function groupFromModel(model) {
+  return ['IC3', 'IC5'].includes(model) ? 'ic' : 'im';
+}
+
 // GET /api/cameras — List cameras with status
 router.get('/', authenticate, async (req, res) => {
   try {
-    const { pdv_id, status } = req.query;
+    const { pdv_id, status, model } = req.query;
     const conditions = [];
     const params = [];
     let idx = 1;
@@ -22,10 +29,14 @@ router.get('/', authenticate, async (req, res) => {
       conditions.push(`c.status = $${idx++}`);
       params.push(status);
     }
+    if (model) {
+      conditions.push(`c.model = $${idx++}`);
+      params.push(model);
+    }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const { rows } = await pool.query(
-      `SELECT c.*, p.name as pdv_name
+      `SELECT c.*, p.name as pdv_name, p.code as pdv_code
        FROM cameras c JOIN pdvs p ON c.pdv_id = p.id
        ${where} ORDER BY p.name, c.name`,
       params
@@ -36,16 +47,48 @@ router.get('/', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/cameras/models — List valid camera models
+router.get('/models', authenticate, (_req, res) => {
+  res.json(VALID_MODELS.map(m => ({
+    model: m,
+    group: groupFromModel(m),
+    has_rtmp: !['IC3', 'IC5'].includes(m),
+    description: {
+      'iM3 C': 'Intelbras iM3 C — RTMP nativo',
+      'iM5 SC': 'Intelbras iM5 SC — RTMP nativo (validado)',
+      'iMX': 'Intelbras iMX — RTMP nativo',
+      'IC3': 'Intelbras IC3 — legada, requer Pi Zero (RTSP→RTMP)',
+      'IC5': 'Intelbras IC5 — legada, requer Pi Zero (RTSP→RTMP)',
+    }[m],
+  })));
+});
+
 // POST /api/cameras — Register new camera
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { name, pdv_id, model, camera_group, location_description } = req.body;
+    const { name, pdv_id, model, location_description } = req.body;
+
+    if (!name || !pdv_id || !model) {
+      return res.status(400).json({ error: 'name, pdv_id and model are required' });
+    }
+    if (!VALID_MODELS.includes(model)) {
+      return res.status(400).json({ error: `Invalid model. Must be one of: ${VALID_MODELS.join(', ')}` });
+    }
+
+    // Verify PDV exists
+    const pdvCheck = await pool.query('SELECT id FROM pdvs WHERE id = $1', [pdv_id]);
+    if (pdvCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'PDV not found' });
+    }
+
     const streamKey = generateStreamKey();
+    const camera_group = groupFromModel(model);
+
     const { rows } = await pool.query(
       `INSERT INTO cameras (name, stream_key, model, camera_group, location_description, pdv_id)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [name, streamKey, model || 'MIBO Intelbras', camera_group || 'im', location_description, pdv_id]
+      [name, streamKey, model, camera_group, location_description, pdv_id]
     );
     const camera = rows[0];
     res.status(201).json({
@@ -62,13 +105,18 @@ router.post('/', authenticate, async (req, res) => {
 router.get('/:id', authenticate, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT c.*, p.name as pdv_name
+      `SELECT c.*, p.name as pdv_name, p.code as pdv_code
        FROM cameras c JOIN pdvs p ON c.pdv_id = p.id
        WHERE c.id = $1`,
       [req.params.id]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
-    res.json(rows[0]);
+    const camera = rows[0];
+    res.json({
+      ...camera,
+      rtmp_url: getRtmpUrl(camera.stream_key),
+      hls_url: getHlsUrl(camera.stream_key),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -77,18 +125,61 @@ router.get('/:id', authenticate, async (req, res) => {
 // PATCH /api/cameras/:id — Update camera
 router.patch('/:id', authenticate, async (req, res) => {
   try {
-    const { name, model, location_description } = req.body;
+    const { name, model, location_description, pdv_id } = req.body;
+
+    if (model && !VALID_MODELS.includes(model)) {
+      return res.status(400).json({ error: `Invalid model. Must be one of: ${VALID_MODELS.join(', ')}` });
+    }
+    if (pdv_id) {
+      const pdvCheck = await pool.query('SELECT id FROM pdvs WHERE id = $1', [pdv_id]);
+      if (pdvCheck.rows.length === 0) {
+        return res.status(400).json({ error: 'PDV not found' });
+      }
+    }
+
+    const camera_group = model ? groupFromModel(model) : undefined;
+
     const { rows } = await pool.query(
       `UPDATE cameras SET
          name = COALESCE($2, name),
          model = COALESCE($3, model),
-         location_description = COALESCE($4, location_description),
+         camera_group = COALESCE($4, camera_group),
+         location_description = COALESCE($5, location_description),
+         pdv_id = COALESCE($6, pdv_id),
          updated_at = now()
        WHERE id = $1 RETURNING *`,
-      [req.params.id, name, model, location_description]
+      [req.params.id, name, model, camera_group, location_description, pdv_id]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
     res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/cameras/:id — Remove camera
+router.delete('/:id', authenticate, async (req, res) => {
+  try {
+    // Check if camera has recordings
+    const recCheck = await pool.query(
+      'SELECT COUNT(*) as count FROM recordings WHERE camera_id = $1',
+      [req.params.id]
+    );
+    if (parseInt(recCheck.rows[0].count) > 0) {
+      return res.status(409).json({
+        error: 'Cannot delete camera with existing recordings. Remove recordings first.',
+      });
+    }
+
+    // Delete events first (FK dependency)
+    await pool.query('DELETE FROM events WHERE camera_id = $1', [req.params.id]);
+
+    const { rows } = await pool.query(
+      'DELETE FROM cameras WHERE id = $1 RETURNING *',
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
+    res.json({ message: 'Camera deleted', camera: rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
