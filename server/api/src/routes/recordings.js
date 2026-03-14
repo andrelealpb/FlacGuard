@@ -4,6 +4,7 @@ import { basename } from 'path';
 import { pool } from '../db/pool.js';
 import { authenticate, authorize } from '../services/auth.js';
 import { cleanupCamera, cleanupAllCameras } from '../services/cleanup.js';
+import { detectFaces, searchFace } from '../services/face-recognition.js';
 
 const router = Router();
 
@@ -178,6 +179,134 @@ router.get('/:id/thumbnail', authenticate, async (req, res) => {
       res.send(buf);
     });
     ffmpeg.on('error', () => res.status(500).json({ error: 'FFmpeg not available' }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/recordings/:id/detect-faces — Extract frame at timestamp and detect faces
+// Returns bounding boxes (relative to video dimensions) + embeddings for click-to-search
+router.post('/:id/detect-faces', authenticate, async (req, res) => {
+  try {
+    const { timestamp } = req.body; // seconds into the video
+    if (timestamp == null || timestamp < 0) {
+      return res.status(400).json({ error: 'timestamp (seconds) is required' });
+    }
+
+    const { rows } = await pool.query(
+      'SELECT file_path FROM recordings WHERE id = $1',
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Recording not found' });
+
+    const filePath = rows[0].file_path;
+    if (!filePath || !existsSync(filePath)) {
+      return res.status(404).json({ error: 'Recording file not found on disk' });
+    }
+
+    // Extract frame at the given timestamp using FFmpeg
+    const { spawn } = await import('child_process');
+    const ffmpeg = spawn('ffmpeg', [
+      '-ss', String(timestamp),
+      '-i', filePath,
+      '-frames:v', '1',
+      '-f', 'image2',
+      '-c:v', 'mjpeg',
+      '-q:v', '2',
+      '-loglevel', 'error',
+      'pipe:1',
+    ]);
+
+    const chunks = [];
+    ffmpeg.stdout.on('data', (chunk) => chunks.push(chunk));
+
+    ffmpeg.on('close', async (code) => {
+      if (code !== 0 || chunks.length === 0) {
+        return res.status(500).json({ error: 'Failed to extract frame' });
+      }
+
+      const frameBuffer = Buffer.concat(chunks);
+
+      try {
+        // Detect faces in the extracted frame
+        const faces = await detectFaces(frameBuffer);
+
+        // Get video dimensions from ffprobe for relative coordinates
+        const probe = spawn('ffprobe', [
+          '-v', 'error',
+          '-select_streams', 'v:0',
+          '-show_entries', 'stream=width,height',
+          '-of', 'json',
+          filePath,
+        ]);
+        let probeOut = '';
+        probe.stdout.on('data', (d) => { probeOut += d; });
+        probe.on('close', () => {
+          let videoWidth = 1920, videoHeight = 1080;
+          try {
+            const info = JSON.parse(probeOut);
+            videoWidth = info.streams[0].width;
+            videoHeight = info.streams[0].height;
+          } catch { /* use defaults */ }
+
+          // Return faces with relative bounding boxes (0-1 range)
+          const result = faces.map((f, idx) => ({
+            id: idx,
+            bbox: {
+              x: f.bbox[0] / videoWidth,
+              y: f.bbox[1] / videoHeight,
+              w: (f.bbox[2] - f.bbox[0]) / videoWidth,
+              h: (f.bbox[3] - f.bbox[1]) / videoHeight,
+            },
+            confidence: f.confidence,
+            embedding: f.embedding, // 512D vector for search
+          }));
+
+          res.json({ faces: result, frame_width: videoWidth, frame_height: videoHeight });
+        });
+      } catch (err) {
+        res.status(500).json({ error: `Face detection failed: ${err.message}` });
+      }
+    });
+
+    ffmpeg.on('error', () => res.status(500).json({ error: 'FFmpeg not available' }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/recordings/search-by-embedding — Search for a person by embedding vector
+router.post('/search-by-embedding', authenticate, async (req, res) => {
+  try {
+    const { embedding, limit = 50, min_similarity = 0.6 } = req.body;
+    if (!embedding || !Array.isArray(embedding)) {
+      return res.status(400).json({ error: 'embedding array is required' });
+    }
+
+    const results = await searchFace(embedding, { limit, minSimilarity: min_similarity });
+
+    // Audit log
+    const userId = req.auth?.user?.id;
+    if (userId) {
+      await pool.query(
+        'INSERT INTO face_search_log (user_id, reason, results) VALUES ($1, $2, $3)',
+        [userId, 'video-face-click', results.length]
+      );
+    }
+
+    const appearances = results.map((r) => ({
+      id: r.id,
+      camera_id: r.camera_id,
+      camera_name: r.camera_name,
+      pdv_id: r.pdv_id,
+      pdv_name: r.pdv_name,
+      similarity: parseFloat(r.similarity),
+      confidence: r.confidence,
+      detected_at: r.detected_at,
+      face_image: r.face_image ? `/api/faces/image?path=${encodeURIComponent(r.face_image)}` : null,
+    }));
+
+    res.json({ total: appearances.length, appearances });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

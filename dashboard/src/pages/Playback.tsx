@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 interface Camera {
@@ -19,6 +19,25 @@ interface Recording {
   ended_at: string | null;
   recording_type: string;
   thumbnail_path: string | null;
+}
+
+interface DetectedFace {
+  id: number;
+  bbox: { x: number; y: number; w: number; h: number }; // 0-1 relative
+  confidence: number;
+  embedding: number[];
+}
+
+interface FaceAppearance {
+  id: string;
+  camera_id: string;
+  camera_name: string;
+  pdv_id: string;
+  pdv_name: string;
+  similarity: number;
+  confidence: number;
+  detected_at: string;
+  face_image: string | null;
 }
 
 type PlaybackSpeed = 0.5 | 1 | 2 | 4;
@@ -158,35 +177,159 @@ function Timeline({
   );
 }
 
-// ─── Video Player ───
+// ─── Video Player with Face Detection Overlay ───
 
 function VideoPlayer({
-  recording, recordings, onSelectRecording, token,
+  recording, recordings, onSelectRecording, token, apiFetch, onFaceClick,
 }: {
   recording: Recording; recordings: Recording[]; onSelectRecording: (r: Recording) => void; token: string;
+  apiFetch: (url: string, init?: RequestInit) => Promise<Response>;
+  onFaceClick: (embedding: number[]) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<PlaybackSpeed>(1);
   const [currentTime, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
   const [muted, setMuted] = useState(false);
   const [error, setError] = useState("");
+  const [faceDetectOn, setFaceDetectOn] = useState(false);
+  const [detectedFaces, setDetectedFaces] = useState<DetectedFace[]>([]);
+  const [detecting, setDetecting] = useState(false);
+  const [hoveredFace, setHoveredFace] = useState<number | null>(null);
+  const lastDetectTime = useRef(-999);
 
-  // Stream URL with token as query param so <video> can authenticate
   const streamUrl = `/api/recordings/${recording.id}/stream?token=${encodeURIComponent(token)}`;
 
   useEffect(() => {
-    setCurrent(0); setDuration(0); setError("");
-    // Auto-play when a new recording is selected
+    setCurrent(0); setDuration(0); setError(""); setDetectedFaces([]); lastDetectTime.current = -999;
     const v = videoRef.current;
-    if (v) {
-      v.playbackRate = speed;
-      v.load();
-      v.play().catch(() => {});
-    }
+    if (v) { v.playbackRate = speed; v.load(); v.play().catch(() => {}); }
   }, [recording.id]);
   useEffect(() => { if (videoRef.current) videoRef.current.playbackRate = speed; }, [speed]);
+
+  // Detect faces when video is paused or every ~3 seconds
+  useEffect(() => {
+    if (!faceDetectOn) { setDetectedFaces([]); return; }
+
+    const interval = setInterval(() => {
+      const v = videoRef.current;
+      if (!v || v.paused || detecting) return;
+      const t = v.currentTime;
+      if (Math.abs(t - lastDetectTime.current) < 2.5) return; // debounce
+      lastDetectTime.current = t;
+      runDetection(t);
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [faceDetectOn, recording.id, detecting]);
+
+  const runDetection = async (timestamp: number) => {
+    setDetecting(true);
+    try {
+      const res = await apiFetch(`/api/recordings/${recording.id}/detect-faces`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timestamp }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDetectedFaces(data.faces || []);
+      }
+    } catch { /* ignore */ }
+    setDetecting(false);
+  };
+
+  // Manual detection on pause
+  const handlePause = () => {
+    setPlaying(false);
+    if (faceDetectOn && videoRef.current) {
+      runDetection(videoRef.current.currentTime);
+    }
+  };
+
+  // Draw face rectangles on canvas overlay
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
+
+    const draw = () => {
+      const rect = video.getBoundingClientRect();
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (!faceDetectOn || detectedFaces.length === 0) return;
+
+      for (const face of detectedFaces) {
+        const x = face.bbox.x * canvas.width;
+        const y = face.bbox.y * canvas.height;
+        const w = face.bbox.w * canvas.width;
+        const h = face.bbox.h * canvas.height;
+        const isHovered = hoveredFace === face.id;
+
+        ctx.strokeStyle = isHovered ? "#ffeb3b" : "#4caf50";
+        ctx.lineWidth = isHovered ? 3 : 2;
+        ctx.strokeRect(x, y, w, h);
+
+        // Confidence label
+        ctx.fillStyle = isHovered ? "rgba(255,235,59,0.8)" : "rgba(76,175,80,0.8)";
+        const label = `${(face.confidence * 100).toFixed(0)}%`;
+        ctx.font = `${Math.max(10, canvas.width * 0.015)}px monospace`;
+        const textW = ctx.measureText(label).width;
+        ctx.fillRect(x, y - 16, textW + 6, 16);
+        ctx.fillStyle = "#000";
+        ctx.fillText(label, x + 3, y - 3);
+      }
+    };
+
+    draw();
+    const resizeObs = new ResizeObserver(draw);
+    resizeObs.observe(video);
+    return () => resizeObs.disconnect();
+  }, [detectedFaces, faceDetectOn, hoveredFace]);
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || detectedFaces.length === 0) { togglePlay(); return; }
+
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width;
+    const my = (e.clientY - rect.top) / rect.height;
+
+    const clicked = detectedFaces.find((f) =>
+      mx >= f.bbox.x && mx <= f.bbox.x + f.bbox.w &&
+      my >= f.bbox.y && my <= f.bbox.y + f.bbox.h
+    );
+
+    if (clicked) {
+      onFaceClick(clicked.embedding);
+    } else {
+      togglePlay();
+    }
+  };
+
+  const handleCanvasMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || detectedFaces.length === 0) { setHoveredFace(null); return; }
+
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width;
+    const my = (e.clientY - rect.top) / rect.height;
+
+    const hovered = detectedFaces.find((f) =>
+      mx >= f.bbox.x && mx <= f.bbox.x + f.bbox.w &&
+      my >= f.bbox.y && my <= f.bbox.y + f.bbox.h
+    );
+
+    setHoveredFace(hovered ? hovered.id : null);
+    canvas.style.cursor = hovered ? "pointer" : "default";
+  };
 
   const togglePlay = useCallback(() => {
     const v = videoRef.current; if (!v) return;
@@ -209,8 +352,8 @@ function VideoPlayer({
   }, [recording.id, recordings, onSelectRecording]);
 
   const toggleFs = useCallback(() => {
-    const v = videoRef.current; if (!v) return;
-    document.fullscreenElement ? document.exitFullscreen() : v.requestFullscreen().catch(() => {});
+    const c = containerRef.current; if (!c) return;
+    document.fullscreenElement ? document.exitFullscreen() : c.requestFullscreen().catch(() => {});
   }, []);
 
   const recStart = new Date(recording.started_at);
@@ -220,15 +363,37 @@ function VideoPlayer({
   const cb: React.CSSProperties = { background: "none", border: "none", color: "#fff", cursor: "pointer", padding: "0.25rem 0.35rem", fontSize: "0.95rem", lineHeight: 1, opacity: 0.85 };
 
   return (
-    <div style={{ background: "#000", borderRadius: "6px", overflow: "hidden", border: "1px solid #333" }}>
-      <video ref={videoRef} src={streamUrl}
-        style={{ width: "100%", display: "block", background: "#000", maxHeight: "45vh" }}
-        onTimeUpdate={() => setCurrent(videoRef.current?.currentTime || 0)}
-        onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
-        onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
-        onEnded={() => { setPlaying(false); goToNext(); }}
-        onError={() => setError("Erro ao carregar vídeo")}
-        onClick={togglePlay} playsInline />
+    <div ref={containerRef} style={{ background: "#000", borderRadius: "6px", overflow: "hidden", border: "1px solid #333" }}>
+      {/* Video + Canvas overlay container */}
+      <div style={{ position: "relative" }}>
+        <video ref={videoRef} src={streamUrl}
+          style={{ width: "100%", display: "block", background: "#000", maxHeight: "45vh" }}
+          onTimeUpdate={() => setCurrent(videoRef.current?.currentTime || 0)}
+          onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
+          onPlay={() => setPlaying(true)} onPause={handlePause}
+          onEnded={() => { setPlaying(false); goToNext(); }}
+          onError={() => setError("Erro ao carregar vídeo")}
+          playsInline />
+        <canvas
+          ref={canvasRef}
+          onClick={handleCanvasClick}
+          onMouseMove={handleCanvasMove}
+          onMouseLeave={() => setHoveredFace(null)}
+          style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: faceDetectOn ? "auto" : "none" }}
+        />
+        {/* Face detection indicator */}
+        {faceDetectOn && (
+          <div style={{ position: "absolute", top: 6, left: 6, display: "flex", gap: "0.35rem", alignItems: "center" }}>
+            <div style={{
+              background: detecting ? "rgba(255,235,59,0.9)" : "rgba(76,175,80,0.9)",
+              color: "#000", padding: "0.15rem 0.4rem", borderRadius: "3px",
+              fontSize: "0.65rem", fontWeight: 600, fontFamily: "monospace",
+            }}>
+              {detecting ? "Detectando..." : `${detectedFaces.length} face(s)`}
+            </div>
+          </div>
+        )}
+      </div>
 
       {error && (
         <div style={{ background: "#c62828", color: "#fff", padding: "0.3rem 0.6rem", fontSize: "0.75rem", textAlign: "center" }}>{error}</div>
@@ -273,6 +438,24 @@ function VideoPlayer({
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.15rem" }}>
+          {/* Face detection toggle */}
+          <button
+            onClick={() => {
+              const next = !faceDetectOn;
+              setFaceDetectOn(next);
+              if (next && videoRef.current) runDetection(videoRef.current.currentTime);
+            }}
+            style={{
+              ...cb,
+              fontSize: "0.75rem",
+              background: faceDetectOn ? "rgba(76,175,80,0.3)" : "none",
+              borderRadius: "3px",
+              padding: "0.2rem 0.4rem",
+            }}
+            title={faceDetectOn ? "Desativar detecção facial" : "Ativar detecção facial"}
+          >
+            &#128065;
+          </button>
           <a href={`/api/recordings/${recording.id}/thumbnail?token=${encodeURIComponent(token)}`}
             download={`thumb-${recording.id}.jpg`}
             title="Baixar imagem"
@@ -345,6 +528,7 @@ function RecordingList({ recordings, selectedRecording, onSelect, token }: {
 
 function Playback() {
   const { apiFetch, token } = useAuth();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState("");
@@ -354,6 +538,27 @@ function Playback() {
   const [loading, setLoading] = useState(false);
   const [searchTimestamp, setSearchTimestamp] = useState("");
   const deepLinkHandled = useRef(false);
+
+  // Face search state
+  const [faceSearchResults, setFaceSearchResults] = useState<FaceAppearance[] | null>(null);
+  const [faceSearching, setFaceSearching] = useState(false);
+
+  const handleFaceClick = async (embedding: number[]) => {
+    setFaceSearching(true);
+    setFaceSearchResults(null);
+    try {
+      const res = await apiFetch("/api/recordings/search-by-embedding", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ embedding, limit: 30, min_similarity: 0.6 }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setFaceSearchResults(data.appearances || []);
+      }
+    } catch { /* ignore */ }
+    setFaceSearching(false);
+  };
 
   useEffect(() => {
     apiFetch("/api/cameras").then((r) => r.json()).then((cams: Camera[]) => {
@@ -466,11 +671,70 @@ function Playback() {
         <div style={{ display: "grid", gridTemplateColumns: recordings.length > 0 ? "1fr 280px" : "1fr", gap: "0.75rem", alignItems: "start" }}>
           <div>
             {selectedRecording && token ? (
-              <VideoPlayer recording={selectedRecording} recordings={recordings} onSelectRecording={setSelectedRecording} token={token} />
+              <VideoPlayer recording={selectedRecording} recordings={recordings} onSelectRecording={setSelectedRecording}
+                token={token} apiFetch={apiFetch} onFaceClick={handleFaceClick} />
             ) : (
               <div style={{ background: "#000", borderRadius: "6px", aspectRatio: "16/9", display: "flex", alignItems: "center", justifyContent: "center",
                 color: "#666", fontSize: "0.85rem", maxHeight: "45vh" }}>
                 {recordings.length > 0 ? "Selecione uma gravação na timeline ou na lista" : selectedCameraId ? "Nenhuma gravação neste dia" : "Selecione uma câmera"}
+              </div>
+            )}
+
+            {/* Face search results panel */}
+            {(faceSearching || faceSearchResults) && (
+              <div style={{ background: "#fff", borderRadius: "6px", border: "1px solid #ddd", padding: "0.75rem", marginTop: "0.5rem" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+                  <div style={{ fontSize: "0.85rem", fontWeight: 600 }}>
+                    {faceSearching ? "Buscando aparições..." : `${faceSearchResults?.length || 0} aparição(ões) encontrada(s)`}
+                  </div>
+                  <button
+                    onClick={() => { setFaceSearchResults(null); setFaceSearching(false); }}
+                    style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.15rem 0.5rem",
+                      cursor: "pointer", fontSize: "0.75rem", color: "#666" }}
+                  >
+                    Fechar
+                  </button>
+                </div>
+
+                {faceSearchResults && faceSearchResults.length > 0 && (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "0.4rem", maxHeight: "250px", overflowY: "auto" }}>
+                    {faceSearchResults.map((a) => (
+                      <div key={a.id} style={{ display: "flex", gap: "0.4rem", alignItems: "center", padding: "0.35rem",
+                        background: "#fafafa", borderRadius: "4px", border: "1px solid #eee" }}>
+                        {a.face_image && token && (
+                          <img
+                            src={`${a.face_image}&token=${encodeURIComponent(token)}`}
+                            alt="Face"
+                            style={{ width: 44, height: 44, objectFit: "cover", borderRadius: "4px", flexShrink: 0 }}
+                          />
+                        )}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: "0.75rem", color: "#2e7d32" }}>
+                            {(a.similarity * 100).toFixed(0)}% match
+                          </div>
+                          <div style={{ fontSize: "0.65rem", color: "#666" }}>{a.pdv_name} — {a.camera_name}</div>
+                          <div style={{ fontSize: "0.65rem", color: "#999" }}>
+                            {new Date(a.detected_at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => navigate(`/playback?camera_id=${a.camera_id}&timestamp=${encodeURIComponent(a.detected_at)}`)}
+                          style={{ flexShrink: 0, padding: "0.15rem 0.35rem", borderRadius: "3px", border: "1px solid #1a1a2e",
+                            background: "#1a1a2e", color: "#fff", cursor: "pointer", fontSize: "0.6rem", fontWeight: 600 }}
+                          title="Ver este momento"
+                        >
+                          &#9654;
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {faceSearchResults && faceSearchResults.length === 0 && (
+                  <div style={{ textAlign: "center", color: "#999", fontSize: "0.8rem", padding: "0.5rem" }}>
+                    Nenhuma outra aparição encontrada para esta pessoa.
+                  </div>
+                )}
               </div>
             )}
           </div>

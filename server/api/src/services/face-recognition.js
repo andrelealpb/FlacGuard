@@ -320,43 +320,44 @@ export async function countDistinctVisitors(cameraId, date) {
 }
 
 /**
- * Get visitor counts for a PDV (all cameras) over a date range.
- * Uses DISTINCT person_id across all cameras in the PDV to avoid
- * counting the same person seen by multiple cameras.
- * Falls back to daily_visitors table sums when person_id data is unavailable.
+ * Get visitor counts over a date range, deduplicated across cameras within each PDV.
+ * When viewing "all", shows breakdown by PDV/loja (not by camera).
+ * When viewing a single PDV, shows total per day for that PDV.
  */
 export async function getVisitorsByPdv(pdvId, from, to) {
-  const cameraFilter = pdvId
-    ? 'c.pdv_id = $1'
-    : '1=1';
   const params = pdvId ? [pdvId, from, to] : [from, to];
   const fromIdx = pdvId ? '$2' : '$1';
   const toIdx = pdvId ? '$3' : '$2';
+  const pdvFilter = pdvId ? 'AND c.pdv_id = $1' : '';
 
-  // Count distinct persons across all cameras per day (cross-camera dedup)
+  // Count distinct persons per PDV per day (cross-camera dedup within each PDV)
   const { rows } = await pool.query(
     `SELECT
-       fe.detected_at::date AS visit_date,
-       COUNT(DISTINCT fe.person_id) AS total_visitors,
+       to_char(fe.detected_at::date, 'YYYY-MM-DD') AS visit_date,
+       COUNT(DISTINCT fe.person_id)::int AS total_visitors,
        json_agg(DISTINCT jsonb_build_object(
-         'camera_id', fe.camera_id,
-         'camera_name', c.name,
-         'count', cam_counts.cam_count
-       )) AS by_camera
+         'pdv_id', p.id,
+         'pdv_name', p.name,
+         'count', pdv_counts.pdv_count
+       )) AS by_pdv
      FROM face_embeddings fe
      JOIN cameras c ON c.id = fe.camera_id
+     JOIN pdvs p ON p.id = c.pdv_id
      JOIN (
-       SELECT camera_id, detected_at::date AS d, COUNT(DISTINCT person_id) AS cam_count
-       FROM face_embeddings
-       WHERE person_id IS NOT NULL
-         AND detected_at::date >= ${fromIdx}
-         AND detected_at::date <= ${toIdx}
-       GROUP BY camera_id, detected_at::date
-     ) cam_counts ON cam_counts.camera_id = fe.camera_id AND cam_counts.d = fe.detected_at::date
-     WHERE ${cameraFilter}
-       AND fe.person_id IS NOT NULL
+       SELECT p2.id AS pdv_id, fe2.detected_at::date AS d,
+              COUNT(DISTINCT fe2.person_id)::int AS pdv_count
+       FROM face_embeddings fe2
+       JOIN cameras c2 ON c2.id = fe2.camera_id
+       JOIN pdvs p2 ON p2.id = c2.pdv_id
+       WHERE fe2.person_id IS NOT NULL
+         AND fe2.detected_at::date >= ${fromIdx}
+         AND fe2.detected_at::date <= ${toIdx}
+       GROUP BY p2.id, fe2.detected_at::date
+     ) pdv_counts ON pdv_counts.pdv_id = p.id AND pdv_counts.d = fe.detected_at::date
+     WHERE fe.person_id IS NOT NULL
        AND fe.detected_at::date >= ${fromIdx}
        AND fe.detected_at::date <= ${toIdx}
+       ${pdvFilter}
      GROUP BY fe.detected_at::date
      ORDER BY fe.detected_at::date DESC`,
     params
@@ -365,13 +366,15 @@ export async function getVisitorsByPdv(pdvId, from, to) {
   // If no person_id data, fall back to daily_visitors table (legacy)
   if (rows.length === 0) {
     const { rows: fallback } = await pool.query(
-      `SELECT dv.visit_date, SUM(dv.count) AS total_visitors,
-              json_agg(json_build_object('camera_id', dv.camera_id, 'camera_name', c.name, 'count', dv.count)) AS by_camera
+      `SELECT to_char(dv.visit_date, 'YYYY-MM-DD') AS visit_date,
+              SUM(dv.count)::int AS total_visitors,
+              json_agg(json_build_object('pdv_id', p.id, 'pdv_name', p.name, 'count', dv.count)) AS by_pdv
        FROM daily_visitors dv
        JOIN cameras c ON c.id = dv.camera_id
-       WHERE ${cameraFilter}
-         AND dv.visit_date >= ${fromIdx}
+       JOIN pdvs p ON p.id = c.pdv_id
+       WHERE dv.visit_date >= ${fromIdx}
          AND dv.visit_date <= ${toIdx}
+         ${pdvFilter}
        GROUP BY dv.visit_date
        ORDER BY dv.visit_date DESC`,
       params
