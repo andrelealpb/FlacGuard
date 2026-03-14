@@ -46,6 +46,221 @@ const emptyForm: CameraForm = {
   location_description: "",
 };
 
+function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => void }) {
+  const rtmpUrl = camera.rtmp_url || `rtmp://<SERVIDOR>:1935/live/${camera.stream_key}`;
+  const hlsUrl = camera.hls_url || `http://<SERVIDOR>:8080/hls/${camera.stream_key}.m3u8`;
+  const isIC = camera.camera_group === "ic";
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
+
+  const fieldStyle: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+    background: "#f5f5f5",
+    padding: "0.5rem 0.75rem",
+    borderRadius: "4px",
+    fontFamily: "monospace",
+    fontSize: "0.8rem",
+    wordBreak: "break-all",
+  };
+
+  const copyBtn: React.CSSProperties = {
+    padding: "0.2rem 0.5rem",
+    border: "1px solid #ccc",
+    borderRadius: "3px",
+    cursor: "pointer",
+    fontSize: "0.7rem",
+    background: "#fff",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
+  };
+
+  const sectionTitle: React.CSSProperties = {
+    fontSize: "0.8rem",
+    fontWeight: 600,
+    marginBottom: "0.3rem",
+    marginTop: "1rem",
+    color: "#333",
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: "rgba(0,0,0,0.5)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "#fff",
+          borderRadius: "10px",
+          padding: "2rem",
+          maxWidth: "640px",
+          width: "90%",
+          maxHeight: "85vh",
+          overflowY: "auto",
+          boxShadow: "0 4px 24px rgba(0,0,0,0.2)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+          <h3 style={{ margin: 0 }}>Configuração da Câmera</h3>
+          <button
+            onClick={onClose}
+            style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "#666", lineHeight: 1 }}
+          >
+            &times;
+          </button>
+        </div>
+
+        <p style={{ color: "#666", fontSize: "0.85rem", margin: "0 0 0.5rem 0" }}>
+          Instruções completas para configurar <strong>{camera.name}</strong> no PDV <strong>{camera.pdv_name}</strong>.
+        </p>
+
+        {/* Dados da câmera */}
+        <div style={sectionTitle}>Nome da Câmera</div>
+        <div style={fieldStyle}>
+          <span style={{ flex: 1 }}>{camera.name}</span>
+        </div>
+
+        <div style={sectionTitle}>Modelo</div>
+        <div style={fieldStyle}>
+          <span style={{ flex: 1 }}>{camera.model} ({camera.camera_group.toUpperCase()})</span>
+        </div>
+
+        <div style={sectionTitle}>PDV</div>
+        <div style={fieldStyle}>
+          <span style={{ flex: 1 }}>{camera.pdv_code ? `[${camera.pdv_code}] ` : ""}{camera.pdv_name}</span>
+        </div>
+
+        {camera.location_description && (
+          <>
+            <div style={sectionTitle}>Localização</div>
+            <div style={fieldStyle}>
+              <span style={{ flex: 1 }}>{camera.location_description}</span>
+            </div>
+          </>
+        )}
+
+        {/* Stream Key */}
+        <div style={{ ...sectionTitle, marginTop: "1.5rem", color: "#1a1a2e", fontSize: "0.9rem" }}>
+          Stream Key (chave de transmissão)
+        </div>
+        <div style={fieldStyle}>
+          <span style={{ flex: 1 }}>{camera.stream_key}</span>
+          <button onClick={() => copyToClipboard(camera.stream_key)} style={copyBtn}>Copiar</button>
+        </div>
+
+        {/* RTMP URL */}
+        <div style={sectionTitle}>URL RTMP (destino do stream)</div>
+        <div style={fieldStyle}>
+          <span style={{ flex: 1 }}>{rtmpUrl}</span>
+          <button onClick={() => copyToClipboard(rtmpUrl)} style={copyBtn}>Copiar</button>
+        </div>
+
+        {/* HLS URL */}
+        <div style={sectionTitle}>URL HLS (visualização ao vivo)</div>
+        <div style={fieldStyle}>
+          <span style={{ flex: 1 }}>{hlsUrl}</span>
+          <button onClick={() => copyToClipboard(hlsUrl)} style={copyBtn}>Copiar</button>
+        </div>
+
+        {/* Instruções */}
+        <div style={{ marginTop: "1.5rem", padding: "1rem", background: "#f8f9fa", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
+          <h4 style={{ margin: "0 0 0.75rem 0", fontSize: "0.9rem" }}>
+            Instruções de Configuração {isIC ? "(com Pi Zero 2W)" : "(RTMP nativo)"}
+          </h4>
+
+          {isIC ? (
+            <ol style={{ margin: 0, paddingLeft: "1.2rem", fontSize: "0.82rem", color: "#333", lineHeight: 1.7 }}>
+              <li>
+                <strong>Câmera (rede local):</strong> Acesse a interface web da câmera pelo IP local
+                (ex: <code>http://192.168.x.x</code>). Ative o stream RTSP em{" "}
+                <strong>Configurações &gt; Rede &gt; RTSP</strong>. Anote a URL RTSP
+                (geralmente <code>rtsp://IP:554/cam/realmonitor?channel=1&subtype=0</code>).
+              </li>
+              <li>
+                <strong>Pi Zero 2W (bridge):</strong> Conecte o Pi Zero à mesma rede do PDV.
+                Configure o FFmpeg para converter o stream RTSP para RTMP:
+                <div style={{ ...fieldStyle, marginTop: "0.4rem", fontSize: "0.75rem" }}>
+                  ffmpeg -rtsp_transport tcp -i rtsp://IP_CAMERA:554/... -c copy -f flv {rtmpUrl}
+                </div>
+              </li>
+              <li>
+                <strong>Teste:</strong> Verifique no dashboard se o status muda para <strong style={{ color: "#4caf50" }}>online</strong>.
+              </li>
+            </ol>
+          ) : (
+            <ol style={{ margin: 0, paddingLeft: "1.2rem", fontSize: "0.82rem", color: "#333", lineHeight: 1.7 }}>
+              <li>
+                <strong>Acesse a câmera:</strong> Abra a interface web da câmera pelo IP local
+                (ex: <code>http://192.168.x.x</code>).
+              </li>
+              <li>
+                <strong>Configuração RTMP:</strong> Navegue até{" "}
+                <strong>Configurações &gt; Rede &gt; Serviços &gt; RTMP</strong>.
+              </li>
+              <li>
+                <strong>Ative</strong> o serviço RTMP.
+              </li>
+              <li>
+                <strong>URL do Servidor:</strong> Insira a URL RTMP abaixo (sem a stream key):
+                <div style={{ ...fieldStyle, marginTop: "0.4rem", fontSize: "0.75rem" }}>
+                  <span style={{ flex: 1 }}>{rtmpUrl.substring(0, rtmpUrl.lastIndexOf("/") + 1)}</span>
+                  <button onClick={() => copyToClipboard(rtmpUrl.substring(0, rtmpUrl.lastIndexOf("/") + 1))} style={copyBtn}>Copiar</button>
+                </div>
+              </li>
+              <li>
+                <strong>Stream Key:</strong> Insira a chave de transmissão:
+                <div style={{ ...fieldStyle, marginTop: "0.4rem", fontSize: "0.75rem" }}>
+                  <span style={{ flex: 1 }}>{camera.stream_key}</span>
+                  <button onClick={() => copyToClipboard(camera.stream_key)} style={copyBtn}>Copiar</button>
+                </div>
+              </li>
+              <li>
+                <strong>Codec de vídeo:</strong> Selecione <strong>H.264</strong> (obrigatório).
+              </li>
+              <li>
+                <strong>Resolução recomendada:</strong> 1280×720 (720p) ou 1920×1080 (1080p).
+              </li>
+              <li>
+                <strong>Bitrate recomendado:</strong> 1500–3000 kbps para 720p, 3000–5000 kbps para 1080p.
+              </li>
+              <li>
+                <strong>Salve</strong> e aguarde a câmera conectar. O status mudará para{" "}
+                <strong style={{ color: "#4caf50" }}>online</strong> no dashboard.
+              </li>
+            </ol>
+          )}
+        </div>
+
+        <div style={{ marginTop: "1rem", padding: "0.75rem", background: "#fff3e0", borderRadius: "6px", fontSize: "0.8rem", color: "#e65100" }}>
+          <strong>Importante:</strong> A Stream Key é única e não pode ser alterada. Não compartilhe
+          com terceiros. Qualquer pessoa com essa chave pode transmitir vídeo neste canal.
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1.25rem" }}>
+          <button onClick={onClose} style={{ padding: "0.5rem 1.5rem", border: "1px solid #1a1a2e", borderRadius: "4px", cursor: "pointer", background: "#1a1a2e", color: "#fff", fontSize: "0.85rem" }}>
+            Fechar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Cameras() {
   const { apiFetch } = useAuth();
   const [cameras, setCameras] = useState<Camera[]>([]);
@@ -59,6 +274,7 @@ function Cameras() {
   const [filterPdv, setFilterPdv] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState("");
+  const [infoCamera, setInfoCamera] = useState<Camera | null>(null);
 
   const loadData = () => {
     Promise.all([
@@ -150,6 +366,16 @@ function Cameras() {
       }
     } catch {
       alert("Erro de conexão");
+    }
+  };
+
+  const handleInfo = async (camera: Camera) => {
+    try {
+      const res = await apiFetch(`/api/cameras/${camera.id}`);
+      const full = await res.json();
+      setInfoCamera(full);
+    } catch {
+      setInfoCamera(camera);
     }
   };
 
@@ -406,6 +632,13 @@ function Cameras() {
                   </td>
                   <td style={{ padding: "0.6rem 1rem" }}>
                     <div style={{ display: "flex", gap: "0.3rem" }}>
+                      <button
+                        onClick={() => handleInfo(cam)}
+                        title="Instruções de configuração"
+                        style={{ ...btnStyle, fontSize: "0.75rem", padding: "0.25rem 0.5rem", color: "#1565c0" }}
+                      >
+                        &#9432; Config
+                      </button>
                       <button onClick={() => handleEdit(cam)} style={{ ...btnStyle, fontSize: "0.75rem", padding: "0.25rem 0.5rem" }}>
                         Editar
                       </button>
@@ -419,6 +652,11 @@ function Cameras() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* Camera Info Modal */}
+      {infoCamera && (
+        <CameraInfoModal camera={infoCamera} onClose={() => setInfoCamera(null)} />
       )}
     </div>
   );
