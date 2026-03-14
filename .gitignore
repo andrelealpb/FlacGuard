@@ -21,3 +21,4 @@ data/
 
 # Docker
 *.log
+dashboard/tsconfig.tsbuildinfo
