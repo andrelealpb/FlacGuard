@@ -51,6 +51,22 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
   const hlsUrl = camera.hls_url || `http://<SERVIDOR>:8080/hls/${camera.stream_key}.m3u8`;
   const isIC = camera.camera_group === "ic";
 
+  // Parse RTMP URL into components for camera config fields
+  // rtmp://host:port/live/streamkey
+  let rtmpHost = "";
+  let rtmpPort = "1935";
+  let rtmpPath = "/live";
+  try {
+    const match = rtmpUrl.match(/^rtmp:\/\/([^:/]+):?(\d+)?(\/[^/]+)?/);
+    if (match) {
+      rtmpHost = match[1];
+      rtmpPort = match[2] || "1935";
+      rtmpPath = match[3] || "/live";
+    }
+  } catch { /* fallback */ }
+
+  const rtmpAddress = `${rtmpHost}${rtmpPath}`;
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text).catch(() => {});
   };
@@ -84,6 +100,13 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
     marginBottom: "0.3rem",
     marginTop: "1rem",
     color: "#333",
+  };
+
+  const labelHint: React.CSSProperties = {
+    fontSize: "0.7rem",
+    color: "#888",
+    fontWeight: 400,
+    marginLeft: "0.4rem",
   };
 
   return (
@@ -126,7 +149,7 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
         </div>
 
         <p style={{ color: "#666", fontSize: "0.85rem", margin: "0 0 0.5rem 0" }}>
-          Instruções completas para configurar <strong>{camera.name}</strong> no PDV <strong>{camera.pdv_name}</strong>.
+          Instruções para configurar <strong>{camera.name}</strong> no PDV <strong>{camera.pdv_name}</strong>.
         </p>
 
         {/* Dados da câmera */}
@@ -154,33 +177,69 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
           </>
         )}
 
-        {/* Stream Key */}
-        <div style={{ ...sectionTitle, marginTop: "1.5rem", color: "#1a1a2e", fontSize: "0.9rem" }}>
-          Stream Key (chave de transmissão)
-        </div>
-        <div style={fieldStyle}>
-          <span style={{ flex: 1 }}>{camera.stream_key}</span>
-          <button onClick={() => copyToClipboard(camera.stream_key)} style={copyBtn}>Copiar</button>
+        {/* Dados para configurar na câmera - Seção destaque */}
+        <div style={{
+          marginTop: "1.5rem",
+          padding: "1.25rem",
+          background: "#e8f5e9",
+          borderRadius: "8px",
+          border: "1px solid #c8e6c9",
+        }}>
+          <h4 style={{ margin: "0 0 0.75rem 0", fontSize: "0.95rem", color: "#2e7d32" }}>
+            Dados para inserir na câmera
+          </h4>
+          <p style={{ margin: "0 0 0.75rem 0", fontSize: "0.8rem", color: "#555" }}>
+            No app Intelbras ou interface web, acesse <strong>Configuração RTMP</strong>, selecione
+            {" "}<strong>Personalizado</strong> e preencha:
+          </p>
+
+          {/* Endereço */}
+          <div style={{ ...sectionTitle, marginTop: "0.5rem" }}>
+            Endereço <span style={labelHint}>(campo "Endereço" na câmera)</span>
+          </div>
+          <div style={fieldStyle}>
+            <span style={{ flex: 1 }}>{rtmpAddress}</span>
+            <button onClick={() => copyToClipboard(rtmpAddress)} style={copyBtn}>Copiar</button>
+          </div>
+
+          {/* Porta */}
+          <div style={sectionTitle}>
+            Porta <span style={labelHint}>(campo "Porta" na câmera)</span>
+          </div>
+          <div style={fieldStyle}>
+            <span style={{ flex: 1 }}>{rtmpPort}</span>
+            <button onClick={() => copyToClipboard(rtmpPort)} style={copyBtn}>Copiar</button>
+          </div>
+
+          {/* Stream Key */}
+          <div style={sectionTitle}>
+            Stream Key <span style={labelHint}>(campo "URL RTMP" ou "Chave de transmissão")</span>
+          </div>
+          <div style={fieldStyle}>
+            <span style={{ flex: 1 }}>{camera.stream_key}</span>
+            <button onClick={() => copyToClipboard(camera.stream_key)} style={copyBtn}>Copiar</button>
+          </div>
         </div>
 
-        {/* RTMP URL */}
-        <div style={sectionTitle}>URL RTMP (destino do stream)</div>
+        {/* URLs completas (referência) */}
+        <div style={{ ...sectionTitle, marginTop: "1.5rem", color: "#1a1a2e", fontSize: "0.85rem" }}>
+          URLs completas (referência)
+        </div>
+        <div style={sectionTitle}>URL RTMP</div>
         <div style={fieldStyle}>
           <span style={{ flex: 1 }}>{rtmpUrl}</span>
           <button onClick={() => copyToClipboard(rtmpUrl)} style={copyBtn}>Copiar</button>
         </div>
-
-        {/* HLS URL */}
         <div style={sectionTitle}>URL HLS (visualização ao vivo)</div>
         <div style={fieldStyle}>
           <span style={{ flex: 1 }}>{hlsUrl}</span>
           <button onClick={() => copyToClipboard(hlsUrl)} style={copyBtn}>Copiar</button>
         </div>
 
-        {/* Instruções */}
+        {/* Instruções passo a passo */}
         <div style={{ marginTop: "1.5rem", padding: "1rem", background: "#f8f9fa", borderRadius: "8px", border: "1px solid #e0e0e0" }}>
           <h4 style={{ margin: "0 0 0.75rem 0", fontSize: "0.9rem" }}>
-            Instruções de Configuração {isIC ? "(com Pi Zero 2W)" : "(RTMP nativo)"}
+            Passo a passo {isIC ? "(modelo IC — com Pi Zero 2W)" : "(modelo iM — RTMP nativo)"}
           </h4>
 
           {isIC ? (
@@ -205,41 +264,41 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
           ) : (
             <ol style={{ margin: 0, paddingLeft: "1.2rem", fontSize: "0.82rem", color: "#333", lineHeight: 1.7 }}>
               <li>
-                <strong>Acesse a câmera:</strong> Abra a interface web da câmera pelo IP local
-                (ex: <code>http://192.168.x.x</code>).
+                Abra o <strong>app Intelbras</strong> ou a <strong>interface web</strong> da câmera.
               </li>
               <li>
-                <strong>Configuração RTMP:</strong> Navegue até{" "}
-                <strong>Configurações &gt; Rede &gt; Serviços &gt; RTMP</strong>.
+                Acesse <strong>Configuração RTMP</strong>.
               </li>
               <li>
-                <strong>Ative</strong> o serviço RTMP.
+                Em <strong>Stream</strong>, selecione <strong>Econômica</strong> (recomendado para economia de banda)
+                ou <strong>Principal</strong> (melhor qualidade).
               </li>
               <li>
-                <strong>URL do Servidor:</strong> Insira a URL RTMP abaixo (sem a stream key):
+                Selecione <strong>Personalizado</strong>.
+              </li>
+              <li>
+                No campo <strong>Endereço</strong>, cole:
                 <div style={{ ...fieldStyle, marginTop: "0.4rem", fontSize: "0.75rem" }}>
-                  <span style={{ flex: 1 }}>{rtmpUrl.substring(0, rtmpUrl.lastIndexOf("/") + 1)}</span>
-                  <button onClick={() => copyToClipboard(rtmpUrl.substring(0, rtmpUrl.lastIndexOf("/") + 1))} style={copyBtn}>Copiar</button>
+                  <span style={{ flex: 1 }}>{rtmpAddress}</span>
+                  <button onClick={() => copyToClipboard(rtmpAddress)} style={copyBtn}>Copiar</button>
                 </div>
               </li>
               <li>
-                <strong>Stream Key:</strong> Insira a chave de transmissão:
+                No campo <strong>Porta</strong>, insira:
+                <div style={{ ...fieldStyle, marginTop: "0.4rem", fontSize: "0.75rem" }}>
+                  <span style={{ flex: 1 }}>{rtmpPort}</span>
+                  <button onClick={() => copyToClipboard(rtmpPort)} style={copyBtn}>Copiar</button>
+                </div>
+              </li>
+              <li>
+                No campo <strong>URL RTMP</strong>, cole a Stream Key:
                 <div style={{ ...fieldStyle, marginTop: "0.4rem", fontSize: "0.75rem" }}>
                   <span style={{ flex: 1 }}>{camera.stream_key}</span>
                   <button onClick={() => copyToClipboard(camera.stream_key)} style={copyBtn}>Copiar</button>
                 </div>
               </li>
               <li>
-                <strong>Codec de vídeo:</strong> Selecione <strong>H.264</strong> (obrigatório).
-              </li>
-              <li>
-                <strong>Resolução recomendada:</strong> 1280×720 (720p) ou 1920×1080 (1080p).
-              </li>
-              <li>
-                <strong>Bitrate recomendado:</strong> 1500–3000 kbps para 720p, 3000–5000 kbps para 1080p.
-              </li>
-              <li>
-                <strong>Salve</strong> e aguarde a câmera conectar. O status mudará para{" "}
+                Clique em <strong>Salvar</strong> e aguarde. O status mudará para{" "}
                 <strong style={{ color: "#4caf50" }}>online</strong> no dashboard.
               </li>
             </ol>
