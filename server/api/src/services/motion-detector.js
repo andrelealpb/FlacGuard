@@ -1,9 +1,22 @@
 import { spawn } from 'child_process';
 import { pool } from '../db/pool.js';
 import { startRecording, stopRecording, isRecording } from './recorder.js';
+import { detectFaces, storeFaceEmbeddings, checkWatchlist, isFaceServiceHealthy } from './face-recognition.js';
 
 // Per-camera state
 const cameraStates = new Map();
+
+// Face service availability (checked periodically)
+let faceServiceAvailable = false;
+async function checkFaceService() {
+  faceServiceAvailable = await isFaceServiceHealthy();
+  if (faceServiceAvailable) {
+    console.log('[Face] Face detection service is available');
+  }
+}
+// Check every 30s
+setInterval(checkFaceService, 30000);
+setTimeout(checkFaceService, 5000); // Initial check after 5s
 
 // Extract a single frame from HLS stream as raw RGB buffer
 function extractFrame(hlsUrl) {
@@ -90,6 +103,57 @@ function saveFrameAsJpeg(hlsUrl, outputPath) {
       reject(new Error('Thumbnail save timeout'));
     }, 10000);
   });
+}
+
+// Extract a single frame as JPEG buffer (for face detection)
+function extractFrameJpeg(hlsUrl) {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', [
+      '-i', hlsUrl,
+      '-frames:v', '1',
+      '-vf', 'scale=640:480',
+      '-f', 'image2',
+      '-vcodec', 'mjpeg',
+      '-q:v', '3',
+      '-loglevel', 'error',
+      '-y',
+      'pipe:1',
+    ]);
+
+    const chunks = [];
+    ffmpeg.stdout.on('data', (chunk) => chunks.push(chunk));
+    ffmpeg.on('close', (code) => {
+      if (code !== 0 || chunks.length === 0) {
+        reject(new Error('JPEG frame extraction failed'));
+        return;
+      }
+      resolve(Buffer.concat(chunks));
+    });
+    ffmpeg.on('error', reject);
+    setTimeout(() => { ffmpeg.kill('SIGKILL'); reject(new Error('JPEG frame timeout')); }, 10000);
+  });
+}
+
+// Process face detection for a frame (runs async, doesn't block motion detection)
+async function processFaces(camera, hlsUrl) {
+  try {
+    const jpegBuffer = await extractFrameJpeg(hlsUrl);
+    const faces = await detectFaces(jpegBuffer);
+
+    if (faces.length === 0) return;
+
+    const embeddingIds = await storeFaceEmbeddings(camera.id, faces, new Date());
+
+    // Check against watchlist
+    if (embeddingIds.length > 0) {
+      await checkWatchlist(camera.id, embeddingIds);
+    }
+  } catch (err) {
+    // Only log occasionally to avoid spam
+    if (Math.random() < 0.05) {
+      console.error(`[Face] Error for camera ${camera.name}:`, err.message?.slice(0, 100));
+    }
+  }
 }
 
 // Process a single camera for motion detection
@@ -191,6 +255,15 @@ async function processCamera(camera) {
       }
     }
 
+    // Face detection: run async (non-blocking) when face service is available
+    // Process every frame when motion is active, or every ~5th frame when idle
+    if (faceServiceAvailable) {
+      const shouldProcess = state.motionActive || Math.random() < 0.2;
+      if (shouldProcess) {
+        processFaces(camera, hlsUrl).catch(() => {});
+      }
+    }
+
     state.previousFrame = currentFrame;
   } catch (err) {
     // Silently ignore frame extraction errors (camera may be temporarily unavailable)
@@ -223,8 +296,14 @@ async function motionDetectionLoop() {
       const batch = cameras.slice(i, i + CONCURRENCY);
       await Promise.allSettled(
         batch.map((camera) => {
+          // Motion detection for cameras in motion mode
           if (camera.recording_mode === 'motion') {
             return processCamera(camera);
+          }
+          // Face detection only for continuous-mode cameras (when face service is up)
+          if (faceServiceAvailable) {
+            const hlsUrl = `http://nginx-rtmp:8080/hls/${camera.stream_key}.m3u8`;
+            return processFaces(camera, hlsUrl).catch(() => {});
           }
           return Promise.resolve();
         })

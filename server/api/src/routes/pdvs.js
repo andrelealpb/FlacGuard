@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { authenticate } from '../services/auth.js';
 import { fetchAllStores, isPulseConfigured } from '../services/pulse.js';
+import { getVisitorsByPdv } from '../services/face-recognition.js';
 
 const router = Router();
 
@@ -193,6 +194,26 @@ router.get('/:id/events', authenticate, async (req, res) => {
       [...params, parseInt(limit), parseInt(offset)]
     );
     res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/pdvs/:id/visitors — Distinct visitors per day
+router.get('/:id/visitors', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { from, to } = req.query;
+
+    const now = new Date();
+    const defaultFrom = new Date(now);
+    defaultFrom.setDate(defaultFrom.getDate() - 7);
+
+    const dateFrom = from || defaultFrom.toISOString().split('T')[0];
+    const dateTo = to || now.toISOString().split('T')[0];
+
+    const visitors = await getVisitorsByPdv(id, dateFrom, dateTo);
+    res.json({ pdv_id: id, from: dateFrom, to: dateTo, days: visitors });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

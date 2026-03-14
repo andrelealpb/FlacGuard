@@ -14,6 +14,7 @@ import pdvsRouter from './routes/pdvs.js';
 import authRouter from './routes/auth.js';
 import hooksRouter from './routes/hooks.js';
 import settingsRouter from './routes/settings.js';
+import facesRouter from './routes/faces.js';
 import { pool } from './db/pool.js';
 import { startMotionDetector } from './services/motion-detector.js';
 import { manageContinuousRecordings } from './services/recorder.js';
@@ -28,7 +29,7 @@ app.use(express.json());
 // Rate limiting: 100 req/min per IP/API Key
 const limiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 100,
+  max: 200,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => req.headers['x-api-key'] || req.ip,
@@ -43,6 +44,7 @@ app.use('/api/events', eventsRouter);
 app.use('/api/webhooks', webhooksRouter);
 app.use('/api/pdvs', pdvsRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/faces', facesRouter);
 
 // Nginx-RTMP callback hooks (internal, no /api prefix)
 app.use('/hooks', hooksRouter);

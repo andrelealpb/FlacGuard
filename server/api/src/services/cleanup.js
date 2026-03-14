@@ -79,5 +79,41 @@ async function deleteOldRecordings(camera) {
     console.error(`[Cleanup] Error cleaning camera ${camera.name}:`, err.message);
   }
 
+  // Clean old face embeddings (same retention as recordings)
+  // NOTE: Watchlist entries are NEVER auto-deleted (permanent)
+  try {
+    const { rows: oldFaces } = await pool.query(
+      `SELECT id, face_image
+       FROM face_embeddings
+       WHERE camera_id = $1
+         AND detected_at < now() - ($2 || ' days')::interval`,
+      [camera.id, camera.retention_days]
+    );
+
+    let facesDeleted = 0;
+    for (const face of oldFaces) {
+      // Delete face crop image file
+      if (face.face_image && existsSync(face.face_image)) {
+        try { unlinkSync(face.face_image); } catch { /* ok */ }
+      }
+      await pool.query('DELETE FROM face_embeddings WHERE id = $1', [face.id]);
+      facesDeleted++;
+    }
+
+    if (facesDeleted > 0) {
+      console.log(`[Cleanup] Camera ${camera.name}: deleted ${facesDeleted} old face embeddings`);
+    }
+
+    // Also clean old daily_visitors records beyond retention
+    await pool.query(
+      `DELETE FROM daily_visitors
+       WHERE camera_id = $1
+         AND visit_date < (now() - ($2 || ' days')::interval)::date`,
+      [camera.id, camera.retention_days]
+    );
+  } catch (err) {
+    console.error(`[Cleanup] Error cleaning face data for ${camera.name}:`, err.message);
+  }
+
   return { deleted, freed };
 }

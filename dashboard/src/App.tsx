@@ -7,11 +7,15 @@ import PDVs from "./pages/PDVs";
 import Settings from "./pages/Settings";
 import Stats from "./pages/Stats";
 import Cameras from "./pages/Cameras";
+import FaceSearch from "./pages/FaceSearch";
+import Visitors from "./pages/Visitors";
 
 const navItems = [
   { to: "/", label: "Ao Vivo" },
   { to: "/cameras", label: "Câmeras" },
   { to: "/playback", label: "Gravações" },
+  { to: "/faces", label: "Facial" },
+  { to: "/visitors", label: "Visitantes" },
   { to: "/pdvs", label: "PDVs" },
   { to: "/settings", label: "Configurações" },
   { to: "/stats", label: "Stats" },
@@ -76,6 +80,8 @@ function App() {
           <Route path="/" element={<Live />} />
           <Route path="/cameras" element={<Cameras />} />
           <Route path="/playback" element={<Playback />} />
+          <Route path="/faces" element={<FaceSearch />} />
+          <Route path="/visitors" element={<Visitors />} />
           <Route path="/pdvs" element={<PDVs />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/stats" element={<Stats />} />
