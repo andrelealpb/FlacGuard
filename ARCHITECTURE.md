@@ -1,72 +1,99 @@
 # HappyDo Guard — Arquitetura do Sistema
 
 > Sistema centralizado de vídeo monitoramento para mercadinhos autônomos da Happydo Mercadinhos.
-> Versão 2.2 | Março 2026
+> Versão 2.3 | Março 2026 | **Fase 1 Concluída**
 
 ---
 
-## 1. Contexto de Negócio
+## 1. Visão Geral do Projeto
 
-A Happydo Mercadinhos opera 60-80 **mercadinhos autônomos de autoatendimento** instalados em condomínios e empresas em João Pessoa/PB. Cada PDV possui 1-2 câmeras Wi-Fi da linha MIBO Intelbras (~80 câmeras no total).
+Este documento descreve a arquitetura técnica definitiva para o sistema centralizado de vídeo monitoramento da Happydo Mercadinhos, integrando aproximadamente 80 câmeras Wi-Fi da linha MIBO Intelbras distribuídas em 60-80 Pontos de Venda (PDVs), com 1-2 câmeras por PDV, na região de João Pessoa, Paraíba.
 
-**Necessidades principais:**
-- Prevenção e combate a furtos em operações de autoatendimento
-- Identificação de ações suspeitas via vídeo e IA
-- Busca de momentos exatos de gravação por timestamp (ex: "quando o repositor chegou no PDV X?")
-- Contagem remota de produtos nas prateleiras
-- Integração com o HappyDoPulse (app mobile React Native/Expo) e outros sistemas via API
+Os PDVs são **mercadinhos autônomos de autoatendimento** instalados em condomínios e empresas. O monitoramento por vídeo é essencial para prevenção e combate a furtos, identificação de ações suspeitas, contagem remota de produtos e acompanhamento das visitas dos repositores. A integração com outros sistemas (como o HappyDoPulse) é fundamental para cruzar dados de vídeo com eventos operacionais.
 
-**Restrições operacionais críticas:**
-- **Sem acesso aos roteadores** dos PDVs (redes de condomínios/empresas)
-- Sem possibilidade de port-forwarding, DDNS ou qualquer configuração de rede
-- Apenas conexões de saída (outbound) funcionam
-- Todo o desenvolvimento e infraestrutura deve ser 100% online/cloud
+A arquitetura é baseada no protocolo RTMP (Real-Time Messaging Protocol), onde as próprias câmeras enviam o stream de vídeo diretamente para um servidor na cloud, eliminando a necessidade de hardware local na grande maioria dos PDVs e dispensando qualquer configuração nos roteadores das redes locais.
+
+### 1.1 Objetivos
+
+- **Monitoramento ao vivo centralizado:** visualizar qualquer câmera de qualquer PDV em tempo real via interface web.
+- **Gravação contínua:** armazenar vídeo 24/7 com retenção configurável por PDV.
+- **Acesso a gravações:** buscar e reproduzir gravações por data/hora, câmera e PDV.
+- **Busca por momento exato:** API para que outros softwares (HappyDoPulse) solicitem o vídeo de um momento específico (ex: horário de chegada do repositor).
+- **Prevenção de furtos:** base para detecção de ações suspeitas, contagem de produtos e análise comportamental via IA.
+- **Zero hardware nos PDVs:** eliminar necessidade de equipamento adicional onde possível.
+- **Sem acesso a roteadores:** funcionar sem port-forwarding, DDNS ou configuração de rede.
+- **Escalabilidade:** arquitetura que suporte crescimento de 80 para 200+ câmeras.
+
+### 1.2 Restrições e Premissas
+
+- Cada PDV possui internet própria com IP dinâmico.
+- **Não há acesso aos roteadores** dos PDVs (redes de condomínios/empresas).
+- Solução deve funcionar apenas com conexões de saída (outbound).
+- 1-2 câmeras por PDV (podendo chegar a 3 no futuro).
+- Câmeras MIBO conectadas via Wi-Fi 2.4 GHz.
+- Hospedagem em cloud (VPS).
+- **Todo o desenvolvimento e infraestrutura 100% online/cloud.**
+
+### 1.3 Decisão: RTMP vs RTSP
+
+O RTSP é tecnicamente superior para vídeo de câmeras (menor latência, controle bidirecional, padrão da indústria CFTV). Porém, RTSP funciona como "pull" — o servidor precisa alcançar a câmera, o que exige port-forwarding no roteador. Como **não temos acesso aos roteadores**, o RTMP é a única opção viável: a câmera "empurra" o stream para fora (outbound), funcionando em qualquer rede, inclusive atrás de CGNAT.
+
+No trecho entre o Pi Zero e as câmeras IC, o RTSP é usado localmente (mesma rede), e o Pi converte para RTMP outbound — usando o melhor de cada protocolo onde é possível.
+
+### 1.4 Decisão: Nginx-RTMP + Custom vs Shinobi
+
+O Shinobi foi avaliado e descartado. Ele foi projetado para puxar streams via RTSP (pull), não para receber RTMP (push). A solução adotada é **Nginx-RTMP** como receptor de streams + **API/Dashboard customizados em Node.js/React**, com controle total sobre funcionalidades, API e integração.
+
+> **Mudança em relação à v1.x:** As versões anteriores previam agentes locais (Raspberry Pi) em todos os PDVs com túneis VPN. A descoberta de que as câmeras iM suportam RTMP nativo, combinada com a impossibilidade de acessar roteadores, levou a uma arquitetura fundamentalmente diferente: RTMP-first, com hardware local apenas para as câmeras IC legadas.
 
 ---
 
 ## 2. Inventário de Câmeras
 
-### Grupo 1: Câmeras iM com RTMP nativo (~57 câmeras) — ZERO hardware no PDV
+### 2.1 Distribuição por Modelo e Capacidade
 
 | Modelo | Qtd aprox. | RTMP | RTSP | ONVIF | Estratégia |
 |--------|-----------|------|------|-------|------------|
 | iM3 C | ~20 | ✅ SIM | ✅ | ✅ | RTMP direto → Cloud |
 | iM5 SC | ~25 | ✅ SIM (validado) | ✅ | ✅ | RTMP direto → Cloud |
 | iMX | ~12 | ✅ SIM | ✅ | ✅ | RTMP direto → Cloud |
+| IC3 | ~13 | ❌ NÃO | ✅ | ✅* | Pi Zero (RTSP→RTMP) |
+| IC5 | ~10 | ❌ NÃO | ✅ | ✅* | Pi Zero (RTSP→RTMP) |
+| **TOTAL** | **~80** | **~57 com RTMP** | **Todas** | | |
 
-**Configuração RTMP validada em campo (iM5 SC, firmware 2.800.00IB01X.0.R.240927):**
-- App Mibo Smart → Configurações → Mais → Redes → RTMP → Habilitar → Personalizado
-- Campos: Stream (Econômica/Principal), Endereço, Porta, URL RTMP
-- A câmera faz conexão outbound para `rtmp://Endereço:Porta/URL_RTMP`
+\* ONVIF nas IC3/IC5 disponível após atualização de firmware.
 
-### Grupo 2: Câmeras IC legadas (~23 câmeras) — Pi Zero como tradutor
+### 2.2 Configuração RTMP Validada (iM5 SC)
 
-| Modelo | Qtd aprox. | RTMP | RTSP | Estratégia |
-|--------|-----------|------|------|------------|
-| IC3 | ~13 | ❌ | ✅ | Pi Zero 2 W (RTSP→RTMP) |
-| IC5 | ~10 | ❌ | ✅ | Pi Zero 2 W (RTSP→RTMP) |
+Validação realizada em campo em uma câmera iM5 SC (firmware 2.800.00IB01X.0.R.240927).
 
-**Comando FFmpeg no Pi Zero:**
-```bash
-ffmpeg -i rtsp://admin:CHAVE@IP_LOCAL:554/live -c copy -f flv rtmp://servidor:1935/live/stream_key
-```
+**Caminho no app:** Mibo Smart → Configurações → Mais → Redes → RTMP → Habilitar → Personalizado
 
-### Autenticação das câmeras
-- **RTSP**: usuário `admin`, senha = chave de acesso da etiqueta (6 caracteres alfanuméricos), porta 554
-- **RTMP**: sem autenticação adicional, segurança pela stream key única
-- **Porta TCP Intelbras-1**: 37777
-- **Todas as câmeras já possuem cartão microSD** instalado (backup local)
+**Campos:**
+- **Stream:** Econômica (sub-stream) ou Principal (full HD)
+- **Endereço:** IP ou domínio do servidor RTMP (ex: guard.happydo.com.br)
+- **Porta:** Porta do serviço RTMP (padrão: 1935)
+- **URL RTMP:** Caminho + stream key (ex: /live/pdv_dct_loja)
+
+A câmera faz conexão outbound para `rtmp://Endereço:Porta/URL_RTMP`. Não requer abertura de portas, DDNS ou configuração no roteador.
+
+### 2.3 Autenticação das Câmeras
+
+- **RTSP (local):** admin / chave de acesso da etiqueta (6 caracteres alfanuméricos). Porta 554.
+- **RTMP:** Sem autenticação adicional — segurança pela URL única (stream key).
+- **Porta TCP Intelbras-1:** 37777.
+- **Todas as câmeras já possuem cartão microSD** instalado (backup local).
 
 ---
 
-## 3. Arquitetura
+## 3. Arquitetura do Sistema
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     GRUPO 1 (~57 câmeras iM)                    │
 │                                                                 │
 │  [Câmera iM3/iM5/iMX] ──RTMP outbound──→ [Servidor Cloud]     │
-│  (config via app Mibo Smart)              (Nginx-RTMP / SRS)    │
+│  (config via app Mibo Smart)              (Nginx-RTMP)          │
 │  Zero hardware no PDV                                           │
 └─────────────────────────────────────────────────────────────────┘
 
@@ -81,150 +108,190 @@ ffmpeg -i rtsp://admin:CHAVE@IP_LOCAL:554/live -c copy -f flv rtmp://servidor:19
 │                     SERVIDOR CLOUD (VPS)                         │
 │                                                                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐     │
-│  │ Nginx-RTMP   │→ │ NVR/Gravação │→ │ API REST (Node.js)│     │
-│  │ ou SRS       │  │ (segmentos   │  │                   │     │
-│  │              │  │  MP4/HLS)    │  │ /api/cameras      │     │
-│  │ Recebe RTMP  │  │              │  │ /api/recordings   │     │
-│  │ de ~80 cam.  │  │ PostgreSQL   │  │ /api/events       │     │
-│  └──────────────┘  └──────────────┘  │ /api/live         │     │
-│                                      │ /api/snapshots    │     │
-│  ┌──────────────┐  ┌──────────────┐  │ /api/webhooks     │     │
-│  │ Dashboard    │  │ Módulo IA    │  └───────────────────┘     │
-│  │ Web (React)  │  │ (YOLO, Fase5)│                             │
-│  └──────────────┘  └──────────────┘                             │
+│  │ Nginx-RTMP   │→ │ Gravação     │→ │ API REST (Node.js)│     │
+│  │              │  │ FFmpeg       │  │                   │     │
+│  │ Recebe RTMP  │  │ segmentos    │  │ /api/cameras      │     │
+│  │ de ~80 cam.  │  │ MP4/HLS     │  │ /api/recordings   │     │
+│  └──────────────┘  │              │  │ /api/events       │     │
+│                    │ PostgreSQL   │  │ /api/live         │     │
+│  ┌──────────────┐  └──────────────┘  │ /api/snapshots    │     │
+│  │ Dashboard    │                    │ /api/webhooks     │     │
+│  │ Web (React)  │                    └───────────────────┘     │
+│  └──────────────┘                                               │
+│                    ┌──────────────┐                              │
+│                    │ Módulo IA    │                              │
+│                    │ (YOLO, Fase5)│                              │
+│                    └──────────────┘                              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Princípios da arquitetura
-1. **RTMP-first**: câmeras empurram vídeo para fora, sem tocar no roteador
-2. **Zero hardware onde possível**: 57 câmeras iM não precisam de nada no PDV
-3. **100% cloud**: desenvolvimento, armazenamento e processamento online
-4. **API-first**: toda funcionalidade acessível via REST para integração
-5. **Escalável**: começar com 1 câmera, escalar para 200+
+### 3.1 Grupo 1: Câmeras iM com RTMP Nativo (~57 câmeras)
+
+- **Fluxo:** Câmera MIBO iM → RTMP outbound → Servidor RTMP Cloud → Gravação + Dashboard
+- **Configuração:** uma vez via app Mibo Smart (~2 min/câmera)
+- **Hardware no PDV:** nenhum
+- **Configuração no roteador:** nenhuma
+
+### 3.2 Grupo 2: Câmeras IC Legadas (~23 câmeras)
+
+- **Fluxo:** Câmera IC → RTSP local → Pi Zero 2 W (FFmpeg) → RTMP outbound → Servidor Cloud
+- **Comando:** `ffmpeg -i rtsp://admin:CHAVE@IP_LOCAL:554/live -c copy -f flv rtmp://servidor:1935/live/stream_key`
+- **Hardware no PDV:** 1x Pi Zero 2 W (~R$ 150) + fonte + SD 16GB
+- **Configuração no roteador:** nenhuma
+
+### 3.3 Componentes do Servidor
+
+| Componente | Tecnologia | Função |
+|-----------|-----------|--------|
+| Servidor RTMP | Nginx-RTMP | Recebe streams das câmeras |
+| NVR / Gravação | Custom Node.js + FFmpeg | Gravação, playback, timeline |
+| Banco de Dados | PostgreSQL | Metadados: câmeras, PDVs, eventos |
+| Armazenamento | Disco local VPS + Object Storage | Gravações de vídeo |
+| Proxy Reverso | Nginx + Let's Encrypt | HTTPS, autenticação |
+| Dashboard Web | React | Mosaico ao vivo, busca de gravações |
+| Monitoramento | Healthcheck custom + alertas | Detectar câmeras offline |
+
+### 3.4 Dimensionamento
+
+| Recurso | Mínimo | Recomendado |
+|---------|--------|-------------|
+| CPU | 8 vCPUs | 16 vCPUs |
+| RAM | 16 GB | 32 GB |
+| Armazenamento | 2 TB SSD (7 dias) | 4 TB SSD (14 dias) |
+| Banda de entrada | 50 Mbps | 100+ Mbps |
 
 ---
 
-## 4. Stack Tecnológica
+## 4. Segurança
 
-| Componente | Tecnologia | Justificativa |
-|-----------|-----------|---------------|
-| Servidor RTMP | Nginx-RTMP ou SRS | Recebe streams, open source, leve |
-| Gravação | Segmentos MP4/HLS via FFmpeg | Padrão da indústria |
-| Banco de dados | PostgreSQL | Metadados, câmeras, PDVs, eventos |
-| API Backend | Node.js + Express | Consistente com stack HappyDoPulse |
-| Dashboard Web | React | Mosaico ao vivo, timeline, busca |
-| Proxy reverso | Nginx + Let's Encrypt | HTTPS, autenticação |
-| Containerização | Docker + Docker Compose | Reprodutibilidade, deploy fácil |
-| CI/CD | GitHub Actions | Push na main → deploy no VPS |
-| Monitoramento | Healthcheck custom + alertas | Câmeras offline, disco cheio |
-| IA (Fase 5) | YOLO v8/v11 | Detecção de pessoas, objetos |
+- Stream keys únicas por câmera, servidor rejeita keys não cadastradas.
+- HTTPS obrigatório (Let's Encrypt). JWT com níveis: Admin, Operador, Visualizador.
+- Firewall: 1935 (RTMP) + 443 (HTTPS) + 22 (SSH).
+- LGPD: coleta justificada, retenção 7-14 dias, exclusão automática.
 
 ---
 
-## 5. API REST
+## 5. API de Integração
 
-### Endpoints principais
+### 5.1 Endpoints
 
 ```
-GET    /api/cameras                    # Listar câmeras com status
-GET    /api/cameras/:id/live           # URL do stream HLS/WebRTC
-GET    /api/cameras/:id/recordings     # Listar gravações por período
-GET    /api/cameras/:id/recording      # Buscar gravação por timestamp exato
-GET    /api/cameras/:id/snapshot       # Frame atual (JPEG)
-GET    /api/cameras/:id/download       # Download trecho MP4
-GET    /api/pdvs                       # Listar PDVs com câmeras e status
-GET    /api/pdvs/:id/events            # Eventos de um PDV
-GET    /api/events                     # Todos os eventos (movimento, offline, IA)
-POST   /api/webhooks                   # Cadastrar webhooks para alertas
+GET    /api/cameras                              # Listar câmeras com status
+GET    /api/cameras/:id/live                     # URL do stream HLS/WebRTC
+GET    /api/cameras/:id/recordings               # Listar gravações por período
+GET    /api/cameras/:id/recording?timestamp=...  # Gravação por momento exato
+GET    /api/cameras/:id/snapshot                 # Frame atual (JPEG)
+GET    /api/cameras/:id/download                 # Download trecho MP4
+GET    /api/pdvs                                 # Listar PDVs com câmeras
+GET    /api/events                               # Eventos (movimento, offline, IA)
+POST   /api/webhooks                             # Cadastrar webhooks
 ```
 
-### Busca por momento exato (caso de uso crítico)
-
-O HappyDoPulse pode pedir: *"me dê o vídeo do PDV 42 às 14:32 do dia 10/03/2026"*
+### 5.2 Busca por Momento Exato
 
 ```
 GET /api/cameras/pdv42_im5sc/recording?timestamp=2026-03-10T14:32:00&duration=300
+→ URL temporária para trecho MP4 de 5 minutos
 ```
 
-Resposta: URL temporária para o trecho MP4 de 5 minutos ao redor do timestamp.
+### 5.3 Autenticação
 
-### Autenticação
-- API Key (header `X-API-Key`) para integrações server-to-server
-- JWT para usuários do dashboard
-- Rate limiting: 100 req/min por API Key
+- API Key (`X-API-Key`) para server-to-server (HappyDoPulse).
+- JWT para dashboard web. Rate limit: 100 req/min.
 
 ---
 
-## 6. Segurança
+## 6. Detecção Inteligente (IA) — Fase 5
 
-- Stream keys únicas por câmera (ex: `/live/pdv42_im5sc_001`)
-- Servidor RTMP rejeita stream keys não cadastradas
-- HTTPS obrigatório no dashboard (Let's Encrypt)
-- JWT com níveis: Admin, Operador, Visualizador
-- Firewall: apenas portas 1935 (RTMP), 443 (HTTPS), 22 (SSH)
-- LGPD: coleta justificada (segurança patrimonial), retenção limitada (7-14 dias), exclusão automática
+Componente central para mercadinhos autônomos sem atendente.
 
----
-
-## 7. Detecção Inteligente (IA) — Fase 5
-
-**Contexto**: mercadinhos autônomos sem atendente → IA é componente central, não acessório.
-
-**Capacidades previstas:**
-- Detecção de pessoas em áreas restritas
-- Identificação de ações suspeitas (mãos em prateleiras sem compra correspondente)
-- Contagem de produtos nas prateleiras (inventário visual)
-- Contagem de pessoas no PDV (analytics de fluxo)
-- Alertas automáticos via webhook
-
-**Abordagem técnica:**
-- Motor: YOLO v8/v11
-- Pipeline: NVR extrai frames → serviço IA processa → publica eventos na API
-- GPU cloud sob demanda (não 24/7) para otimizar custos
+- **Motor:** YOLO v8/v11. GPU cloud sob demanda.
+- **Capacidades:** detecção de pessoas, ações suspeitas, contagem de produtos, heatmaps.
+- **Pipeline:** NVR extrai frames → serviço IA processa → publica eventos na API.
 
 ---
 
-## 8. Infraestrutura (VPS)
+## 7. Ambiente de Desenvolvimento
 
-### Recomendação: Contabo (melhor custo-benefício para vídeo)
-
-| Fase | Plano | Specs | Custo/mês |
-|------|-------|-------|-----------|
-| 1. PoC | Cloud VPS 10 | 4 vCPU, 8GB RAM, 75GB NVMe | ~R$ 30 |
-| 2-3. Piloto | Cloud VPS 20 | 6 vCPU, 16GB RAM, 150GB NVMe | ~R$ 55 |
-| 4. Rollout | Storage VPS 30 | 8 vCPU, 24GB RAM, 1TB SSD | ~R$ 100 |
-| 4+. Escala | Cloud VPS 40 | 12 vCPU, 48GB RAM, 300GB NVMe | ~R$ 150 |
-
-Tráfego de entrada ilimitado. Upgrade sem migração.
-
-### Alternativa: Hetzner (melhor rede, 20TB tráfego incluso na EU)
+100% online. Claude Code via SSH no VPS. GitHub + GitHub Actions para CI/CD. PostgreSQL no VPS.
 
 ---
 
-## 9. Custos
+## 8. Custos
 
-| Item | Valor |
-|------|-------|
-| CAPEX total | ~R$ 3.000 (apenas Pi Zero para ICs) |
-| OPEX Fase 1 (PoC) | ~R$ 30/mês |
-| OPEX Fase 4 (Rollout) | ~R$ 100-150/mês |
+| | Valor |
+|--|-------|
+| **CAPEX total** | ~R$ 3.000 (Pi Zeros para ICs) |
+| OPEX Fase 1 | ~R$ 30/mês |
+| OPEX Rollout | ~R$ 100-150/mês |
 | OPEX steady-state | ~R$ 150-300/mês |
 
-Comparativo: Mibo Cloud custaria R$ 1.200-2.400/mês para 80 câmeras.
+**VPS por fase (Contabo):** VPS 10 (R$30) → VPS 20 (R$55) → Storage VPS 30 (R$100) → VPS 40 (R$150)
 
 ---
 
-## 10. Plano de Implementação
+## 9. Plano de Implementação
 
-| Fase | Duração | Entrega |
-|------|---------|---------|
-| 1. PoC | 1-2 semanas | 1 câmera RTMP → servidor → gravação funcionando |
-| 2. Dashboard | 2-3 semanas | NVR + interface web + API |
-| 3. Piloto | 2-3 semanas | 5 PDVs integrados |
-| 4. Rollout | 3-4 semanas | ~80 câmeras online |
-| 5. Evolução | Contínuo | IA, HappyDoPulse, analytics |
+### 9.1 Fase 1 — PoC ✅ CONCLUÍDA
 
-**Total: 8-12 semanas até rollout completo.**
+| # | Ação | Status |
+|---|------|--------|
+| 1 | Provisionar VPS Contabo Cloud VPS 10 | ✅ |
+| 2 | Deploy: docker compose up -d + migrations | ✅ |
+| 3 | Criar admin | ✅ |
+| 4 | Configurar iM5 SC (DCT LOJA) RTMP | ✅ |
+| 5 | Configurar +2 câmeras teste | ✅ |
+| 6 | Estabilidade 72h | ✅ |
+
+### 9.2 Fase 2 — Completar Produto ⏳ PRÓXIMA
+
+| # | Ação | Detalhe |
+|---|------|---------|
+| 1 | Implementar /snapshot e /download | FFmpeg (hoje 501) |
+| 2 | HTTPS + guard.happydo.com.br | Let's Encrypt |
+| 3 | Limpeza automática +14 dias | Cron LGPD |
+| 4 | Seed PDVs e câmeras | Script via API |
+
+### 9.3 Fase 3 — Piloto (5 PDVs)
+
+| # | Ação | Detalhe |
+|---|------|---------|
+| 1 | Pi Zero para câmeras IC | Agent RTSP→RTMP |
+| 2 | Alertas câmera offline | Webhooks → HappyDoPulse |
+| 3 | Auth JWT no dashboard | Frontend sem token hoje |
+
+### 9.4 Fase 4 — Rollout (~80 câmeras)
+
+| # | Ação | Detalhe |
+|---|------|---------|
+| 1 | Monitoramento completo | Disco, CPU, câmeras |
+| 2 | Upgrade VPS | Storage VPS 30 |
+| 3 | Integração HappyDoPulse | API Key para app mobile |
+| 4 | Config ~77 câmeras iM | 10-15/dia via app |
+| 5 | Deploy Pi Zeros ICs | ~20 agentes |
+
+### 9.5 Fase 5 — IA e Evolução
+
+| # | Ação | Detalhe |
+|---|------|---------|
+| 1 | YOLO v8/v11 | Pessoas, ações suspeitas |
+| 2 | Contagem de produtos | Inventário visual |
+| 3 | Heatmaps e analytics | Dados por PDV |
+| 4 | Módulo vídeo HappyDoPulse | Tela nativa no app |
+| 5 | Investigar P2P TUTK/Kalay | Acesso remoto ao SD |
+| 6 | Migrar IC → iM | Eliminar Pi Zeros |
+
+---
+
+## 10. Riscos
+
+| Risco | Impacto | Mitigação | Prob. |
+|-------|---------|-----------|-------|
+| Intelbras remover RTMP em firmware | Alto | Travar firmware | Baixa |
+| Queda de internet no PDV | Médio | SD grava local | Alta |
+| Rede bloquear porta 1935 | Médio | Fallback 443/80 | Baixa |
+| Sobrecarga servidor | Alto | Escalar VPS, sub-stream | Baixa |
+| Pi Zero instável | Baixo | Watchdog + auto-restart | Média |
 
 ---
 
@@ -232,80 +299,30 @@ Comparativo: Mibo Cloud custaria R$ 1.200-2.400/mês para 80 câmeras.
 
 ```
 happydo-guard/
-├── ARCHITECTURE.md          # Este arquivo
-├── README.md                # Setup e getting started
-├── docker-compose.yml       # Orquestração dos serviços
-├── .github/
-│   └── workflows/
-│       └── deploy.yml       # CI/CD GitHub Actions
+├── ARCHITECTURE.md
+├── README.md
+├── docker-compose.yml
+├── .github/workflows/deploy.yml
 ├── server/
-│   ├── nginx-rtmp/
-│   │   └── nginx.conf       # Config do Nginx-RTMP
-│   ├── api/
-│   │   ├── package.json
-│   │   ├── src/
-│   │   │   ├── index.js     # Entry point Express
-│   │   │   ├── routes/
-│   │   │   │   ├── cameras.js
-│   │   │   │   ├── recordings.js
-│   │   │   │   ├── events.js
-│   │   │   │   └── webhooks.js
-│   │   │   ├── services/
-│   │   │   │   ├── rtmp.js       # Gerência de streams
-│   │   │   │   ├── recording.js  # Gravação e segmentação
-│   │   │   │   └── health.js     # Healthcheck das câmeras
-│   │   │   └── db/
-│   │   │       ├── schema.sql
-│   │   │       └── migrations/
-│   │   └── Dockerfile
-│   └── recorder/
-│       ├── record.sh         # Script de gravação FFmpeg
-│       └── Dockerfile
-├── dashboard/
-│   ├── package.json
-│   ├── src/
-│   │   ├── App.jsx
-│   │   ├── pages/
-│   │   │   ├── Live.jsx      # Mosaico ao vivo
-│   │   │   ├── Playback.jsx  # Timeline e busca
-│   │   │   ├── PDVs.jsx      # Lista de PDVs
-│   │   │   └── Settings.jsx
-│   │   └── components/
-│   └── Dockerfile
-├── agent/
-│   ├── README.md             # Setup do Pi Zero para câmeras IC
-│   ├── install.sh            # Script de instalação automática
-│   ├── rtsp-to-rtmp.sh       # Script FFmpeg
-│   └── systemd/
-│       └── happydo-agent.service
-└── docs/
-    ├── cameras.md            # Lista de câmeras e chaves
-    ├── rtmp-setup.md         # Como configurar RTMP no app Mibo
-    └── vps-setup.md          # Como provisionar o VPS
+│   ├── nginx-rtmp/nginx.conf
+│   ├── api/src/ (Express + routes + services + db)
+│   └── recorder/ (FFmpeg scripts)
+├── dashboard/src/ (React)
+├── agent/ (Pi Zero scripts + systemd)
+└── docs/ (cameras.md, rtmp-setup.md, vps-setup.md)
 ```
 
 ---
 
-## 12. Primeiros Passos (Fase 1)
+## 12. Notas Técnicas
 
-1. **Provisionar VPS**: Contabo Cloud VPS 10 (~US$ 5/mês)
-2. **Criar repo**: `happydo-guard` no GitHub
-3. **Setup Nginx-RTMP**: Docker no VPS
-4. **Configurar 1 câmera**: iM5 SC da "DCT LOJA" com RTMP personalizado apontando para o VPS
-5. **Validar stream**: confirmar recepção, gravação e playback
-6. **Testar estabilidade**: 72h contínuas
+### P2P Intelbras (TUTK/Kalay)
+Câmeras MIBO usam ThroughTek Kalay. Intelbras não fornece API/SDK para MIBO. Engenharia reversa viável (precedente Wyze/wyzecam) mas arriscada. Investigação na Fase 5.
 
----
+### Apps Mibo
+**Mibo** (IC3/IC5 legadas) e **Mibo Smart** (linha iM). RTMP está no Mibo Smart. APK antigo tem certificado CN=hikvision.
 
-## 13. Notas Técnicas
-
-### Sobre P2P da Intelbras (TUTK/Kalay)
-As câmeras MIBO usam ThroughTek Kalay para P2P. A Intelbras não fornece API/SDK para a linha MIBO. Engenharia reversa é tecnicamente viável (existe precedente com câmeras Wyze), mas arriscada para produção. Mantido como investigação paralela para acesso remoto ao SD card.
-
-### Sobre o app Mibo Smart
-Existem dois apps: **Mibo** (para IC3/IC5 legadas) e **Mibo Smart** (para linha iM). As configurações RTMP estão no Mibo Smart. O certificado do APK antigo referencia Hikvision (CN=hikvision), indicando base de firmware compartilhada.
-
-### Sobre gravações no SD
-- Linha iM: permite desabilitar criptografia e fazer backup pelo computador
-- Linha IC: gravações criptografadas, backup direto pelo PC não funciona nas IC3
-- Em ambos os casos, o SD serve como backup offline de último recurso
+### Gravações no SD
+- **iM:** permite desabilitar criptografia, backup pelo PC funciona.
+- **IC:** gravações criptografadas, backup direto não funciona na IC3.
+- SD = backup offline de último recurso.
