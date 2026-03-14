@@ -636,6 +636,21 @@ function Playback() {
       }).catch(console.error);
   };
 
+  const jumpToMoment = (cameraId: string, timestamp: string) => {
+    const ts = new Date(timestamp);
+    setSelectedCameraId(cameraId);
+    setSelectedDate(dateToYMD(ts));
+    apiFetch(`/api/cameras/${cameraId}/recording?timestamp=${encodeURIComponent(timestamp)}`)
+      .then((r) => r.json())
+      .then((rec) => {
+        if (rec && !rec.error) {
+          // Need a short delay so recordings list updates first
+          setTimeout(() => setSelectedRecording(rec), 300);
+        }
+      })
+      .catch(console.error);
+  };
+
   const handleSelectTime = (time: Date) => {
     const targetSec = time.getHours() * 3600 + time.getMinutes() * 60 + time.getSeconds();
     let closest: Recording | null = null, closestDist = Infinity;
@@ -755,7 +770,7 @@ function Playback() {
                           </div>
                         </div>
                         <button
-                          onClick={() => navigate(`/playback?camera_id=${a.camera_id}&timestamp=${encodeURIComponent(a.detected_at)}`)}
+                          onClick={() => jumpToMoment(a.camera_id, a.first_seen || a.detected_at)}
                           style={{ flexShrink: 0, padding: "0.15rem 0.35rem", borderRadius: "3px", border: "1px solid #1a1a2e",
                             background: "#1a1a2e", color: "#fff", cursor: "pointer", fontSize: "0.6rem", fontWeight: 600 }}
                           title="Ver este momento"
