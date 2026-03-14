@@ -17,7 +17,6 @@ import settingsRouter from './routes/settings.js';
 import { pool } from './db/pool.js';
 import { startMotionDetector } from './services/motion-detector.js';
 import { manageContinuousRecordings } from './services/recorder.js';
-import { startCleanupService } from './services/cleanup.js';
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -111,7 +110,6 @@ runMigrations()
       // Start background services after a delay (let nginx-rtmp be ready)
       setTimeout(() => {
         startMotionDetector();
-        startCleanupService();
 
         // Check for cameras that need continuous recording every 30s
         setInterval(manageContinuousRecordings, 30000);
