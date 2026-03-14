@@ -14,16 +14,21 @@ import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from insightface.app import FaceAnalysis
+from ultralytics import YOLO
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("face-service")
 
 face_app = None
+yolo_model = None
+
+# COCO class 0 = "person"
+PERSON_CLASS_ID = 0
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global face_app
+    global face_app, yolo_model
     logger.info("Loading InsightFace model (buffalo_l)...")
     t0 = time.time()
     face_app = FaceAnalysis(
@@ -33,6 +38,12 @@ async def lifespan(app: FastAPI):
     # det_size: detection input size. Smaller = faster, larger = more accurate
     face_app.prepare(ctx_id=0, det_size=(640, 640))
     logger.info(f"InsightFace model loaded in {time.time() - t0:.1f}s")
+
+    logger.info("Loading YOLOv8n model for person detection...")
+    t1 = time.time()
+    yolo_model = YOLO("yolov8n.pt")
+    logger.info(f"YOLOv8n model loaded in {time.time() - t1:.1f}s")
+
     yield
     logger.info("Shutting down face service")
 
@@ -42,7 +53,11 @@ app = FastAPI(title="HappyDo Guard Face Service", lifespan=lifespan)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_loaded": face_app is not None}
+    return {
+        "status": "ok",
+        "model_loaded": face_app is not None,
+        "person_detection_loaded": yolo_model is not None,
+    }
 
 
 @app.post("/detect")
@@ -132,3 +147,49 @@ async def embed_photo(file: UploadFile = File(...)):
         "confidence": float(best.det_score),
         "faces_found": len(faces),
     }
+
+
+@app.post("/detect-persons")
+async def detect_persons(file: UploadFile = File(...)):
+    """
+    Detect persons (full body) in an image using YOLOv8n.
+    Much more reliable than face-only detection for triggering recordings,
+    as it detects people from any angle (back, side, far away).
+
+    Accepts: JPEG/PNG image upload
+    Returns: { persons: [{ bbox, confidence }], count, elapsed_ms }
+    """
+    if yolo_model is None:
+        raise HTTPException(503, "YOLO model not loaded yet")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(400, "Empty file")
+
+    nparr = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "Invalid image")
+
+    t0 = time.time()
+    results = yolo_model(img, classes=[PERSON_CLASS_ID], conf=0.4, verbose=False)
+    elapsed = time.time() - t0
+
+    persons = []
+    for r in results:
+        for box in r.boxes:
+            bbox = box.xyxy[0].cpu().numpy().astype(int).tolist()
+            confidence = float(box.conf[0])
+            persons.append({
+                "bbox": bbox,
+                "confidence": confidence,
+            })
+
+    if persons:
+        logger.info(f"Detected {len(persons)} person(s) in {elapsed*1000:.0f}ms")
+
+    return JSONResponse({
+        "persons": persons,
+        "count": len(persons),
+        "elapsed_ms": round(elapsed * 1000),
+    })

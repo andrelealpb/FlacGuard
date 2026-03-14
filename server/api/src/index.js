@@ -18,6 +18,7 @@ import facesRouter from './routes/faces.js';
 import { pool } from './db/pool.js';
 import { startMotionDetector } from './services/motion-detector.js';
 import { manageContinuousRecordings } from './services/recorder.js';
+import { countDistinctVisitors } from './services/face-recognition.js';
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -137,6 +138,30 @@ runMigrations()
         // Check for cameras that need continuous recording every 30s
         setInterval(manageContinuousRecordings, 30000);
         manageContinuousRecordings();
+
+        // Compute daily visitor counts for all cameras (runs every 10 minutes)
+        async function computeAllVisitors() {
+          try {
+            const { rows: cameras } = await pool.query('SELECT id, name FROM cameras WHERE status = $1', ['online']);
+            const today = new Date().toISOString().split('T')[0];
+            const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+            for (const cam of cameras) {
+              try {
+                await countDistinctVisitors(cam.id, today);
+                await countDistinctVisitors(cam.id, yesterday);
+              } catch (err) {
+                console.error(`[Visitors] Error computing for ${cam.name}:`, err.message?.slice(0, 100));
+              }
+            }
+            if (cameras.length > 0) {
+              console.log(`[Visitors] Computed visitor counts for ${cameras.length} cameras`);
+            }
+          } catch (err) {
+            console.error('[Visitors] Scheduled computation error:', err.message);
+          }
+        }
+        setInterval(computeAllVisitors, 10 * 60 * 1000); // Every 10 minutes
+        setTimeout(computeAllVisitors, 30000); // First run after 30s
       }, 10000);
     });
   })

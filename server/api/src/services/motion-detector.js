@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { pool } from '../db/pool.js';
 import { startRecording, stopRecording, isRecording } from './recorder.js';
-import { detectFaces, storeFaceEmbeddings, checkWatchlist, isFaceServiceHealthy } from './face-recognition.js';
+import { detectFaces, detectPersons, storeFaceEmbeddings, checkWatchlist, isFaceServiceHealthy, countDistinctVisitors } from './face-recognition.js';
 
 // Per-camera state
 const cameraStates = new Map();
@@ -134,6 +134,10 @@ function extractFrameJpeg(hlsUrl) {
   });
 }
 
+// Track last visitor computation per camera to avoid running too often
+const lastVisitorComputation = new Map();
+const VISITOR_COMPUTATION_INTERVAL = 5 * 60 * 1000; // Recompute at most every 5 minutes
+
 // Process face detection for a frame (runs async, doesn't block motion detection)
 async function processFaces(camera, hlsUrl) {
   try {
@@ -148,11 +152,37 @@ async function processFaces(camera, hlsUrl) {
     if (embeddingIds.length > 0) {
       await checkWatchlist(camera.id, embeddingIds);
     }
+
+    // Compute daily visitor count (throttled to avoid excess DB load)
+    const now = Date.now();
+    const lastComputed = lastVisitorComputation.get(camera.id) || 0;
+    if (now - lastComputed >= VISITOR_COMPUTATION_INTERVAL) {
+      lastVisitorComputation.set(camera.id, now);
+      const today = new Date().toISOString().split('T')[0];
+      countDistinctVisitors(camera.id, today).catch((err) => {
+        if (Math.random() < 0.1) {
+          console.error(`[Visitors] Computation error for camera ${camera.name}:`, err.message?.slice(0, 100));
+        }
+      });
+    }
   } catch (err) {
     // Only log occasionally to avoid spam
     if (Math.random() < 0.05) {
       console.error(`[Face] Error for camera ${camera.name}:`, err.message?.slice(0, 100));
     }
+  }
+}
+
+// Check if persons are present in the frame using YOLO person detection
+async function hasPersons(hlsUrl) {
+  try {
+    const jpegBuffer = await extractFrameJpeg(hlsUrl);
+    const result = await detectPersons(jpegBuffer);
+    return result.count > 0;
+  } catch {
+    // If person detection fails, fall back to allowing the recording
+    // to avoid missing legitimate events
+    return true;
   }
 }
 
@@ -169,6 +199,8 @@ async function processCamera(camera) {
       lastMotionAt: null,
       motionStartAt: null,
       postBufferTimer: null,
+      personConfirmed: false,
+      personCheckAttempts: 0,
     };
     cameraStates.set(id, state);
   }
@@ -190,75 +222,167 @@ async function processCamera(camera) {
         }
 
         if (!state.motionActive) {
-          // Motion just started
+          // Motion just started — check if a person is present before recording
           state.motionActive = true;
           state.motionStartAt = new Date();
+          state.personConfirmed = false;
+          state.personCheckAttempts = 0;
 
-          console.log(`[Motion] Camera ${camera.name} (${id}): motion detected (${changePercent.toFixed(1)}% change)`);
+          console.log(`[Motion] Camera ${camera.name} (${id}): pixel motion detected (${changePercent.toFixed(1)}% change), checking for persons...`);
 
-          // Create motion event
-          await pool.query(
-            `INSERT INTO events (camera_id, type, payload)
-             VALUES ($1, 'motion', $2)`,
-            [id, JSON.stringify({
-              change_percent: parseFloat(changePercent.toFixed(1)),
-              sensitivity: motion_sensitivity,
-              action: 'start',
-            })]
-          );
+          // Check for persons using YOLO if face service is available
+          if (faceServiceAvailable) {
+            const personFound = await hasPersons(hlsUrl);
+            state.personCheckAttempts++;
 
-          // Start recording if in motion mode
-          if (recording_mode === 'motion') {
-            try {
-              const thumbnailPath = `/data/recordings/${stream_key}-thumb-${Date.now()}.jpg`;
-              await saveFrameAsJpeg(hlsUrl, thumbnailPath);
-              startRecording(camera, 'motion', thumbnailPath);
-            } catch (thumbErr) {
-              console.error(`[Motion] Thumbnail error for ${camera.name}:`, thumbErr.message);
-              startRecording(camera, 'motion', null);
+            if (personFound) {
+              state.personConfirmed = true;
+              console.log(`[Motion] Camera ${camera.name} (${id}): PERSON CONFIRMED — starting recording`);
+
+              // Create motion event (person confirmed)
+              await pool.query(
+                `INSERT INTO events (camera_id, type, payload)
+                 VALUES ($1, 'motion', $2)`,
+                [id, JSON.stringify({
+                  change_percent: parseFloat(changePercent.toFixed(1)),
+                  sensitivity: motion_sensitivity,
+                  action: 'start',
+                  person_detected: true,
+                })]
+              );
+
+              // Start recording if in motion mode
+              if (recording_mode === 'motion') {
+                try {
+                  const thumbnailPath = `/data/recordings/${stream_key}-thumb-${Date.now()}.jpg`;
+                  await saveFrameAsJpeg(hlsUrl, thumbnailPath);
+                  startRecording(camera, 'motion', thumbnailPath);
+                } catch (thumbErr) {
+                  console.error(`[Motion] Thumbnail error for ${camera.name}:`, thumbErr.message);
+                  startRecording(camera, 'motion', null);
+                }
+              }
+            } else {
+              console.log(`[Motion] Camera ${camera.name} (${id}): no person detected (attempt ${state.personCheckAttempts}), skipping...`);
             }
-          }
-        }
-      } else if (state.motionActive && !state.postBufferTimer) {
-        // No motion detected but motion was active - start post-buffer countdown
-        const POST_BUFFER_MS = 30000; // 30 seconds
-        state.postBufferTimer = setTimeout(async () => {
-          state.motionActive = false;
-          const motionEndAt = new Date();
+          } else {
+            // Face service not available — fall back to old behavior
+            state.personConfirmed = true;
 
-          console.log(`[Motion] Camera ${camera.name} (${id}): motion ended (post-buffer expired)`);
-
-          // Create motion end event
-          try {
             await pool.query(
               `INSERT INTO events (camera_id, type, payload)
                VALUES ($1, 'motion', $2)`,
               [id, JSON.stringify({
-                action: 'end',
-                started_at: state.motionStartAt?.toISOString(),
-                ended_at: motionEndAt.toISOString(),
-                duration_seconds: Math.round((motionEndAt - state.motionStartAt) / 1000),
+                change_percent: parseFloat(changePercent.toFixed(1)),
+                sensitivity: motion_sensitivity,
+                action: 'start',
+                person_detected: null,
               })]
             );
-          } catch (err) {
-            console.error(`[Motion] Error creating end event for ${camera.name}:`, err.message);
-          }
 
-          // Stop recording if in motion mode
-          if (recording_mode === 'motion') {
-            stopRecording(id);
+            if (recording_mode === 'motion') {
+              try {
+                const thumbnailPath = `/data/recordings/${stream_key}-thumb-${Date.now()}.jpg`;
+                await saveFrameAsJpeg(hlsUrl, thumbnailPath);
+                startRecording(camera, 'motion', thumbnailPath);
+              } catch (thumbErr) {
+                console.error(`[Motion] Thumbnail error for ${camera.name}:`, thumbErr.message);
+                startRecording(camera, 'motion', null);
+              }
+            }
           }
+        } else if (state.motionActive && !state.personConfirmed && faceServiceAvailable) {
+          // Motion continues but person not yet confirmed — retry detection
+          // Allow up to 3 attempts (covering ~9 seconds of motion)
+          const MAX_PERSON_CHECK_ATTEMPTS = 3;
+          if (state.personCheckAttempts < MAX_PERSON_CHECK_ATTEMPTS) {
+            const personFound = await hasPersons(hlsUrl);
+            state.personCheckAttempts++;
 
+            if (personFound) {
+              state.personConfirmed = true;
+              console.log(`[Motion] Camera ${camera.name} (${id}): PERSON CONFIRMED on attempt ${state.personCheckAttempts} — starting recording`);
+
+              await pool.query(
+                `INSERT INTO events (camera_id, type, payload)
+                 VALUES ($1, 'motion', $2)`,
+                [id, JSON.stringify({
+                  change_percent: parseFloat(changePercent.toFixed(1)),
+                  sensitivity: motion_sensitivity,
+                  action: 'start',
+                  person_detected: true,
+                  detection_attempt: state.personCheckAttempts,
+                })]
+              );
+
+              if (recording_mode === 'motion') {
+                try {
+                  const thumbnailPath = `/data/recordings/${stream_key}-thumb-${Date.now()}.jpg`;
+                  await saveFrameAsJpeg(hlsUrl, thumbnailPath);
+                  startRecording(camera, 'motion', thumbnailPath);
+                } catch (thumbErr) {
+                  console.error(`[Motion] Thumbnail error for ${camera.name}:`, thumbErr.message);
+                  startRecording(camera, 'motion', null);
+                }
+              }
+            } else {
+              console.log(`[Motion] Camera ${camera.name} (${id}): no person (attempt ${state.personCheckAttempts}/${MAX_PERSON_CHECK_ATTEMPTS})`);
+            }
+          } else if (state.personCheckAttempts === MAX_PERSON_CHECK_ATTEMPTS) {
+            // Exhausted attempts — dismiss this motion as non-person (tree, light, etc.)
+            state.personCheckAttempts++; // Prevent repeated logging
+            console.log(`[Motion] Camera ${camera.name} (${id}): motion dismissed — no person detected after ${MAX_PERSON_CHECK_ATTEMPTS} attempts`);
+          }
+        }
+      } else if (state.motionActive && !state.postBufferTimer) {
+        // No motion detected but motion was active — start post-buffer countdown
+        // Only run post-buffer if person was confirmed (otherwise just reset)
+        if (!state.personConfirmed) {
+          state.motionActive = false;
           state.motionStartAt = null;
-          state.postBufferTimer = null;
-        }, POST_BUFFER_MS);
+          state.personCheckAttempts = 0;
+        } else {
+          const POST_BUFFER_MS = 30000; // 30 seconds
+          state.postBufferTimer = setTimeout(async () => {
+            state.motionActive = false;
+            state.personConfirmed = false;
+            state.personCheckAttempts = 0;
+            const motionEndAt = new Date();
+
+            console.log(`[Motion] Camera ${camera.name} (${id}): motion ended (post-buffer expired)`);
+
+            // Create motion end event
+            try {
+              await pool.query(
+                `INSERT INTO events (camera_id, type, payload)
+                 VALUES ($1, 'motion', $2)`,
+                [id, JSON.stringify({
+                  action: 'end',
+                  started_at: state.motionStartAt?.toISOString(),
+                  ended_at: motionEndAt.toISOString(),
+                  duration_seconds: Math.round((motionEndAt - state.motionStartAt) / 1000),
+                })]
+              );
+            } catch (err) {
+              console.error(`[Motion] Error creating end event for ${camera.name}:`, err.message);
+            }
+
+            // Stop recording if in motion mode
+            if (recording_mode === 'motion') {
+              stopRecording(id);
+            }
+
+            state.motionStartAt = null;
+            state.postBufferTimer = null;
+          }, POST_BUFFER_MS);
+        }
       }
     }
 
     // Face detection: run async (non-blocking) when face service is available
-    // Process every frame when motion is active, or every ~5th frame when idle
+    // Process every frame when motion is active and person confirmed, or every ~5th frame when idle
     if (faceServiceAvailable) {
-      const shouldProcess = state.motionActive || Math.random() < 0.2;
+      const shouldProcess = (state.motionActive && state.personConfirmed) || Math.random() < 0.2;
       if (shouldProcess) {
         processFaces(camera, hlsUrl).catch(() => {});
       }

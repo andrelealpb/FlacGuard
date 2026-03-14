@@ -56,6 +56,28 @@ export async function embedPhoto(jpegBuffer) {
 }
 
 /**
+ * Detect persons (full body) in a frame using YOLOv8n.
+ * Returns { persons: [{ bbox, confidence }], count }
+ */
+export async function detectPersons(jpegBuffer) {
+  const formData = new FormData();
+  formData.append('file', new Blob([jpegBuffer], { type: 'image/jpeg' }), 'frame.jpg');
+
+  const res = await fetch(`${FACE_SERVICE_URL}/detect-persons`, {
+    method: 'POST',
+    body: formData,
+    signal: AbortSignal.timeout(5000),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Person detection failed (${res.status}): ${text}`);
+  }
+
+  return await res.json();
+}
+
+/**
  * Store detected face embeddings in database.
  */
 export async function storeFaceEmbeddings(cameraId, faces, detectedAt) {
