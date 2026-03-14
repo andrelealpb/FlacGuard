@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 interface Appearance {
@@ -44,6 +45,7 @@ function formatDateTime(iso: string) {
 
 function FaceSearch() {
   const { apiFetch, token } = useAuth();
+  const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
   const wlFileRef = useRef<HTMLInputElement>(null);
 
@@ -265,6 +267,13 @@ function FaceSearch() {
                           <div style={{ fontSize: "0.7rem", color: "#666" }}>{a.pdv_name}</div>
                           <div style={{ fontSize: "0.7rem", color: "#666" }}>{a.camera_name}</div>
                           <div style={{ fontSize: "0.7rem", color: "#999" }}>{formatDateTime(a.detected_at)}</div>
+                          <button
+                            onClick={() => navigate(`/playback?camera_id=${a.camera_id}&timestamp=${encodeURIComponent(a.detected_at)}`)}
+                            style={{ marginTop: "0.3rem", padding: "0.2rem 0.5rem", borderRadius: "3px", border: "1px solid #1a1a2e",
+                              background: "#1a1a2e", color: "#fff", cursor: "pointer", fontSize: "0.7rem", fontWeight: 600 }}
+                          >
+                            &#9654; Ver vídeo
+                          </button>
                         </div>
                       </div>
                     ))}

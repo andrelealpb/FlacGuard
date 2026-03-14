@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 interface Camera {
@@ -344,6 +345,7 @@ function RecordingList({ recordings, selectedRecording, onSelect, token }: {
 
 function Playback() {
   const { apiFetch, token } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState("");
   const [selectedDate, setSelectedDate] = useState(dateToYMD(new Date()));
@@ -351,11 +353,33 @@ function Playback() {
   const [selectedRecording, setSelectedRecording] = useState<Recording | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchTimestamp, setSearchTimestamp] = useState("");
+  const deepLinkHandled = useRef(false);
 
   useEffect(() => {
     apiFetch("/api/cameras").then((r) => r.json()).then((cams: Camera[]) => {
       setCameras(cams);
-      if (cams.length > 0 && !selectedCameraId) setSelectedCameraId(cams[0].id);
+      // Check for deep-link query params (e.g. from face search)
+      const qCameraId = searchParams.get("camera_id");
+      const qTimestamp = searchParams.get("timestamp");
+      if (qCameraId && qTimestamp && !deepLinkHandled.current) {
+        deepLinkHandled.current = true;
+        setSelectedCameraId(qCameraId);
+        const ts = new Date(qTimestamp);
+        setSelectedDate(dateToYMD(ts));
+        // Clear query params from URL
+        setSearchParams({}, { replace: true });
+        // Find the recording that contains this timestamp
+        apiFetch(`/api/cameras/${qCameraId}/recording?timestamp=${encodeURIComponent(qTimestamp)}`)
+          .then((r) => r.json())
+          .then((rec) => {
+            if (rec && !rec.error) {
+              setSelectedRecording(rec);
+            }
+          })
+          .catch(console.error);
+      } else if (cams.length > 0 && !selectedCameraId && !qCameraId) {
+        setSelectedCameraId(cams[0].id);
+      }
     }).catch(console.error);
   }, []);
 
