@@ -17,7 +17,9 @@ router.get('/on-publish', async (req, res) => {
     );
 
     if (rows.length === 0) {
-      console.log(`Rejected unknown stream key: ${streamKey} from ${addr}`);
+      // Debug: check total cameras to verify DB connectivity
+      const { rows: countRows } = await pool.query('SELECT count(*) as total FROM cameras');
+      console.log(`Rejected unknown stream key: "${streamKey}" from ${addr} (total cameras in DB: ${countRows[0].total}, key length: ${streamKey?.length})`);
       return res.status(403).end();
     }
 
