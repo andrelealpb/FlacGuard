@@ -53,7 +53,7 @@ app.use('/hooks', hooksRouter);
 app.get('/api/deploy-status', (_req, res) => {
   // Try deploy-status.json from host (mounted volume)
   const paths = [
-    '/opt/happydo-guard/deploy-status.json',
+    '/opt/HappyDoGuard/deploy-status.json',
     '/app/deploy-status.json',
   ];
   for (const p of paths) {

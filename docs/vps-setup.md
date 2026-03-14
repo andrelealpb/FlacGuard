@@ -26,8 +26,8 @@ sudo usermod -aG docker $USER
 sudo apt install -y docker-compose-plugin
 
 # 4. Clonar repositório
-git clone https://github.com/andrelealpb/HappyDoGuard.git /opt/happydo-guard
-cd /opt/happydo-guard
+git clone https://github.com/andrelealpb/HappyDoGuard.git /opt/HappyDoGuard
+cd /opt/HappyDoGuard
 
 # 5. Configurar variáveis de ambiente
 cp .env.example .env
