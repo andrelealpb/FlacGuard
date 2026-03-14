@@ -7,14 +7,45 @@ interface PDV {
   camera_count: number;
 }
 
+interface PdvBreakdown {
+  pdv_id: string;
+  pdv_name: string;
+  count: number;
+}
+
 interface VisitorDay {
   visit_date: string;
   total_visitors: number;
-  by_camera: { camera_id: string; camera_name: string; count: number }[];
+  by_pdv?: PdvBreakdown[];
 }
 
 function dateToYMD(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+/** Parse visit_date safely — handles "YYYY-MM-DD", ISO timestamps, or Date objects */
+function parseVisitDate(raw: unknown): string {
+  const s = String(raw).split("T")[0]; // "2026-03-14T..." → "2026-03-14"
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  return s; // fallback
+}
+
+function formatDateLabel(ymd: string): string {
+  const parts = ymd.split("-");
+  if (parts.length !== 3) return ymd;
+  const [y, m, d] = parts.map(Number);
+  const date = new Date(y, m - 1, d, 12, 0, 0);
+  if (isNaN(date.getTime())) return ymd;
+  return date.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" });
+}
+
+function formatDateFull(ymd: string): string {
+  const parts = ymd.split("-");
+  if (parts.length !== 3) return ymd;
+  const [y, m, d] = parts.map(Number);
+  const date = new Date(y, m - 1, d, 12, 0, 0);
+  if (isNaN(date.getTime())) return ymd;
+  return date.toLocaleDateString("pt-BR");
 }
 
 function Visitors() {
@@ -45,7 +76,13 @@ function Visitors() {
     apiFetch(`/api/pdvs/${selectedPdv}/visitors?from=${dateToYMD(from)}&to=${dateToYMD(now)}`)
       .then((r) => r.json())
       .then((data) => {
-        setDays(data.days || []);
+        // Normalize: ensure total_visitors is a number and visit_date is clean
+        const normalized = (data.days || []).map((d: VisitorDay) => ({
+          ...d,
+          visit_date: parseVisitDate(d.visit_date),
+          total_visitors: Number(d.total_visitors) || 0,
+        }));
+        setDays(normalized);
         setLoading(false);
       })
       .catch(() => {
@@ -126,11 +163,7 @@ function Visitors() {
 
           <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
             {days.map((d) => {
-              // visit_date can be "2026-03-14" or "2026-03-14T00:00:00.000Z"
-              const dateStr = typeof d.visit_date === "string" ? d.visit_date.split("T")[0] : d.visit_date;
-              const [y, m, day] = String(dateStr).split("-").map(Number);
-              const date = new Date(y, m - 1, day, 12, 0, 0);
-              const dayLabel = date.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" });
+              const dayLabel = formatDateLabel(d.visit_date);
               const pct = (d.total_visitors / maxVisitors) * 100;
 
               return (
@@ -153,21 +186,17 @@ function Visitors() {
             })}
           </div>
 
-          {/* Per-camera breakdown for latest day */}
-          {days.length > 0 && days[0].by_camera && days[0].by_camera.length > 1 && (
+          {/* Per-PDV breakdown for latest day (only when viewing "all") */}
+          {selectedPdv === "all" && days.length > 0 && days[0].by_pdv && days[0].by_pdv.length > 1 && (
             <div style={{ marginTop: "1rem", borderTop: "1px solid #eee", paddingTop: "0.75rem" }}>
               <div style={{ fontSize: "0.75rem", color: "#666", marginBottom: "0.35rem" }}>
-                Detalhamento ({(() => {
-                  const ds = String(days[0].visit_date).split("T")[0];
-                  const [y, m, day] = ds.split("-").map(Number);
-                  return new Date(y, m - 1, day, 12, 0, 0).toLocaleDateString("pt-BR");
-                })()})
+                Por loja ({formatDateFull(days[0].visit_date)})
               </div>
               <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
-                {days[0].by_camera.map((c) => (
-                  <div key={c.camera_id} style={{ fontSize: "0.8rem" }}>
-                    <span style={{ color: "#333", fontWeight: 600 }}>{c.count}</span>
-                    <span style={{ color: "#999", marginLeft: "0.25rem" }}>{c.camera_name}</span>
+                {days[0].by_pdv.map((p) => (
+                  <div key={p.pdv_id} style={{ fontSize: "0.8rem" }}>
+                    <span style={{ color: "#333", fontWeight: 600 }}>{Number(p.count)}</span>
+                    <span style={{ color: "#999", marginLeft: "0.25rem" }}>{p.pdv_name}</span>
                   </div>
                 ))}
               </div>
