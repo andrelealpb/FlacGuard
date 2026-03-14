@@ -49,8 +49,9 @@ const emptyForm: CameraForm = {
 };
 
 function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => void }) {
-  const rtmpPublicUrl = camera.rtmp_public_url || camera.rtmp_url || `rtmp://<SERVIDOR>:1935/live/${camera.stream_key}`;
-  const hlsPublicUrl = camera.hls_public_url || camera.hls_url || `http://<SERVIDOR>:8080/hls/${camera.stream_key}.m3u8`;
+  const rtmpPublicUrl = camera.rtmp_public_url || "";
+  const hlsPublicUrl = camera.hls_public_url || "";
+  const serverConfigured = !!rtmpPublicUrl;
   const isIC = camera.camera_group === "ic";
 
   const copyToClipboard = (text: string) => {
@@ -157,45 +158,56 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
         )}
 
         {/* Seção principal — URL RTMP para colar na câmera */}
-        <div style={{
-          marginTop: "1.5rem",
-          padding: "1.25rem",
-          background: "#e8f5e9",
-          borderRadius: "8px",
-          border: "1px solid #c8e6c9",
-        }}>
-          <h4 style={{ margin: "0 0 0.5rem 0", fontSize: "0.95rem", color: "#2e7d32" }}>
-            Cole no campo "URL RTMP" da câmera
-          </h4>
-          <p style={{ margin: "0 0 0.75rem 0", fontSize: "0.8rem", color: "#555" }}>
-            No app Intelbras: <strong>Configuração RTMP</strong> &rarr; <strong>Personalizado</strong> &rarr; campo <strong>URL RTMP</strong>
-          </p>
-
+        {serverConfigured ? (
           <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "0.5rem",
-            background: "#fff",
-            padding: "0.75rem 1rem",
-            borderRadius: "6px",
-            fontFamily: "monospace",
-            fontSize: "0.85rem",
-            wordBreak: "break-all",
-            border: "2px solid #4caf50",
+            marginTop: "1.5rem",
+            padding: "1.25rem",
+            background: "#e8f5e9",
+            borderRadius: "8px",
+            border: "1px solid #c8e6c9",
           }}>
-            <span style={{ flex: 1 }}>{rtmpPublicUrl}</span>
-            <button onClick={() => copyToClipboard(rtmpPublicUrl)} style={{ ...copyBtn, background: "#4caf50", color: "#fff", border: "1px solid #4caf50", padding: "0.3rem 0.75rem", fontSize: "0.8rem" }}>
-              Copiar
-            </button>
-          </div>
+            <h4 style={{ margin: "0 0 0.5rem 0", fontSize: "0.95rem", color: "#2e7d32" }}>
+              Cole no campo "URL RTMP" da câmera
+            </h4>
+            <p style={{ margin: "0 0 0.75rem 0", fontSize: "0.8rem", color: "#555" }}>
+              No app Intelbras: <strong>Configuração RTMP</strong> &rarr; <strong>Personalizado</strong> &rarr; campo <strong>URL RTMP</strong>
+            </p>
 
-          {rtmpPublicUrl.includes("<SERVIDOR>") && (
-            <div style={{ marginTop: "0.5rem", padding: "0.5rem 0.75rem", background: "#fff3e0", borderRadius: "4px", fontSize: "0.78rem", color: "#e65100" }}>
-              <strong>Atenção:</strong> O endereço do servidor ainda não foi configurado.
-              Defina a variável <code>RTMP_PUBLIC_HOST</code> no docker-compose.yml com o IP ou domínio público do servidor.
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              background: "#fff",
+              padding: "0.75rem 1rem",
+              borderRadius: "6px",
+              fontFamily: "monospace",
+              fontSize: "0.85rem",
+              wordBreak: "break-all",
+              border: "2px solid #4caf50",
+            }}>
+              <span style={{ flex: 1 }}>{rtmpPublicUrl}</span>
+              <button onClick={() => copyToClipboard(rtmpPublicUrl)} style={{ ...copyBtn, background: "#4caf50", color: "#fff", border: "1px solid #4caf50", padding: "0.3rem 0.75rem", fontSize: "0.8rem" }}>
+                Copiar
+              </button>
             </div>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div style={{
+            marginTop: "1.5rem",
+            padding: "1.25rem",
+            background: "#fff3e0",
+            borderRadius: "8px",
+            border: "1px solid #ffe0b2",
+          }}>
+            <h4 style={{ margin: "0 0 0.5rem 0", fontSize: "0.95rem", color: "#e65100" }}>
+              Servidor RTMP não configurado
+            </h4>
+            <p style={{ margin: 0, fontSize: "0.82rem", color: "#555" }}>
+              Para gerar a URL RTMP da câmera, primeiro configure o IP público do servidor
+              em <strong>Configurações &rarr; Servidor RTMP</strong>.
+            </p>
+          </div>
+        )}
 
         {/* Stream Key separada para referência */}
         <div style={sectionTitle}>Stream Key (referência)</div>
