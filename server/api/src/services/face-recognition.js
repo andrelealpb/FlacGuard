@@ -259,17 +259,32 @@ export async function countDistinctVisitors(cameraId, date) {
  * Get visitor counts for a PDV (all cameras) over a date range.
  */
 export async function getVisitorsByPdv(pdvId, from, to) {
+  if (pdvId) {
+    const { rows } = await pool.query(
+      `SELECT dv.visit_date, SUM(dv.count) AS total_visitors,
+              json_agg(json_build_object('camera_id', dv.camera_id, 'camera_name', c.name, 'count', dv.count)) AS by_camera
+       FROM daily_visitors dv
+       JOIN cameras c ON c.id = dv.camera_id
+       WHERE c.pdv_id = $1
+         AND dv.visit_date >= $2
+         AND dv.visit_date <= $3
+       GROUP BY dv.visit_date
+       ORDER BY dv.visit_date DESC`,
+      [pdvId, from, to]
+    );
+    return rows;
+  }
+  // All PDVs
   const { rows } = await pool.query(
     `SELECT dv.visit_date, SUM(dv.count) AS total_visitors,
             json_agg(json_build_object('camera_id', dv.camera_id, 'camera_name', c.name, 'count', dv.count)) AS by_camera
      FROM daily_visitors dv
      JOIN cameras c ON c.id = dv.camera_id
-     WHERE c.pdv_id = $1
-       AND dv.visit_date >= $2
-       AND dv.visit_date <= $3
+     WHERE dv.visit_date >= $1
+       AND dv.visit_date <= $2
      GROUP BY dv.visit_date
      ORDER BY dv.visit_date DESC`,
-    [pdvId, from, to]
+    [from, to]
   );
   return rows;
 }

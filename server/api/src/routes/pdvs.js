@@ -212,7 +212,8 @@ router.get('/:id/visitors', authenticate, async (req, res) => {
     const dateFrom = from || defaultFrom.toISOString().split('T')[0];
     const dateTo = to || now.toISOString().split('T')[0];
 
-    const visitors = await getVisitorsByPdv(id, dateFrom, dateTo);
+    const pdvId = id === 'all' ? null : id;
+    const visitors = await getVisitorsByPdv(pdvId, dateFrom, dateTo);
     res.json({ pdv_id: id, from: dateFrom, to: dateTo, days: visitors });
   } catch (err) {
     res.status(500).json({ error: err.message });

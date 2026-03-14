@@ -20,7 +20,7 @@ function dateToYMD(date: Date) {
 function Visitors() {
   const { apiFetch } = useAuth();
   const [pdvs, setPdvs] = useState<PDV[]>([]);
-  const [selectedPdv, setSelectedPdv] = useState("");
+  const [selectedPdv, setSelectedPdv] = useState("all");
   const [days, setDays] = useState<VisitorDay[]>([]);
   const [loading, setLoading] = useState(false);
   const [period, setPeriod] = useState(7);
@@ -30,7 +30,6 @@ function Visitors() {
       .then((r) => r.json())
       .then((data: PDV[]) => {
         setPdvs(data);
-        if (data.length > 0) setSelectedPdv(data[0].id);
       })
       .catch(console.error);
   }, []);
@@ -72,7 +71,7 @@ function Visitors() {
           onChange={(e) => setSelectedPdv(e.target.value)}
           style={{ padding: "0.4rem", borderRadius: "4px", border: "1px solid #ccc", fontSize: "0.85rem", minWidth: "200px" }}
         >
-          <option value="">Selecione o PDV</option>
+          <option value="all">TODOS</option>
           {pdvs.map((p) => (
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}
@@ -116,7 +115,7 @@ function Visitors() {
         <div style={{ textAlign: "center", padding: "2rem", color: "#999" }}>Carregando...</div>
       ) : days.length === 0 ? (
         <div style={{ ...card, textAlign: "center", color: "#999", padding: "2rem" }}>
-          {selectedPdv ? "Nenhum dado de visitantes para este período." : "Selecione um PDV."}
+          {selectedPdv ? "Nenhum dado de visitantes para este período." : "Selecione um PDV ou TODOS."}
           <div style={{ fontSize: "0.75rem", marginTop: "0.5rem" }}>
             Os dados de visitantes são gerados automaticamente pelo reconhecimento facial.
           </div>
