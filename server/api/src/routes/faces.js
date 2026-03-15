@@ -8,7 +8,7 @@ import {
   countDistinctVisitors,
   getVisitorsByPdv,
 } from '../services/face-recognition.js';
-import { writeFileSync, existsSync, mkdirSync, unlinkSync } from 'fs';
+import { writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 const router = Router();
@@ -341,22 +341,134 @@ router.post('/visitors/compute', authenticate, authorize('admin'), async (req, r
   }
 });
 
-// POST /api/faces/visitors/reset — Clear all visitor data and recount from scratch
-router.post('/visitors/reset', authenticate, authorize('admin'), async (_req, res) => {
-  try {
-    // Delete all face embeddings (visitor counting data)
-    const { rowCount: deletedEmbeddings } = await pool.query('DELETE FROM face_embeddings');
-    // Clear daily visitor counts
-    const { rowCount: deletedDaily } = await pool.query('DELETE FROM daily_visitors');
 
-    res.json({
-      message: 'Dados de visitantes resetados com sucesso',
-      deleted_embeddings: deletedEmbeddings,
-      deleted_daily_counts: deletedDaily,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+// POST /api/faces/reimport — Rebuild face_embeddings from existing crop files on disk
+const FACE_DIR = '/data/recordings/faces';
+const FACE_SERVICE_URL = process.env.FACE_SERVICE_URL || 'http://face-service:8001';
+const VISITOR_THRESHOLD = 0.65;
+
+let reimportRunning = false;
+
+router.post('/reimport', authenticate, authorize('admin'), async (_req, res) => {
+  if (reimportRunning) {
+    return res.status(409).json({ error: 'Reimportação já está em andamento' });
   }
+
+  reimportRunning = true;
+
+  try {
+    if (!existsSync(FACE_DIR)) {
+      reimportRunning = false;
+      return res.status(404).json({ error: 'Diretório de faces não encontrado' });
+    }
+
+    const files = readdirSync(FACE_DIR).filter(f => f.startsWith('face-') && f.endsWith('.jpg')).sort();
+    if (files.length === 0) {
+      reimportRunning = false;
+      return res.json({ message: 'Nenhum crop encontrado', imported: 0, skipped: 0, errors: 0 });
+    }
+
+    // Get all cameras for timestamp matching
+    const { rows: cameras } = await pool.query('SELECT id, name FROM cameras');
+    if (cameras.length === 0) {
+      reimportRunning = false;
+      return res.status(400).json({ error: 'Nenhuma câmera cadastrada' });
+    }
+
+    // Respond immediately — reimport runs in background
+    res.json({ message: `Reimportação iniciada para ${files.length} crops. Acompanhe os logs do servidor.`, total_files: files.length });
+
+    let imported = 0, skipped = 0, errors = 0;
+    console.log(`[reimport] Starting reimport of ${files.length} face crops...`);
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      try {
+        // Extract timestamp from filename: face-{timestamp}-{random}.jpg
+        const match = file.match(/^face-(\d+)-/);
+        if (!match) { skipped++; continue; }
+
+        const fileTimestamp = parseInt(match[1], 10);
+        const detectedAt = new Date(fileTimestamp);
+        const filePath = join(FACE_DIR, file);
+
+        // Check if this crop is already in the database
+        const { rows: existing } = await pool.query(
+          'SELECT id FROM face_embeddings WHERE face_image = $1 LIMIT 1', [filePath]
+        );
+        if (existing.length > 0) { skipped++; continue; }
+
+        // Read crop and send to embed service
+        const jpegBuffer = readFileSync(filePath);
+        const formData = new FormData();
+        formData.append('file', new Blob([jpegBuffer], { type: 'image/jpeg' }), 'photo.jpg');
+
+        const embedRes = await fetch(`${FACE_SERVICE_URL}/embed`, { method: 'POST', body: formData });
+        if (!embedRes.ok) { skipped++; continue; } // No face found or service error
+
+        const { embedding, confidence } = await embedRes.json();
+        if (!embedding || confidence < 0.35) { skipped++; continue; }
+
+        // Find which camera had a recording at this timestamp
+        const { rows: recMatch } = await pool.query(
+          `SELECT camera_id FROM recordings
+           WHERE start_time <= $1 AND end_time >= $1
+           ORDER BY start_time DESC LIMIT 1`,
+          [detectedAt]
+        );
+        const cameraId = recMatch.length > 0 ? recMatch[0].camera_id : cameras[0].id;
+
+        // Person linking: find existing person by embedding similarity
+        const embeddingStr = `[${embedding.join(',')}]`;
+        let personId = null;
+        try {
+          const { rows: matches } = await pool.query(
+            `SELECT person_id, 1 - (embedding <=> $1::vector) AS similarity
+             FROM face_embeddings
+             WHERE person_id IS NOT NULL
+             ORDER BY embedding <=> $1::vector
+             LIMIT 1`,
+            [embeddingStr]
+          );
+          if (matches.length > 0 && matches[0].similarity >= VISITOR_THRESHOLD) {
+            personId = matches[0].person_id;
+          }
+        } catch { /* continue without linking */ }
+
+        if (!personId) {
+          const { rows: uuidRows } = await pool.query('SELECT uuid_generate_v4() AS id');
+          personId = uuidRows[0].id;
+        }
+
+        // Insert into face_embeddings
+        await pool.query(
+          `INSERT INTO face_embeddings (camera_id, embedding, face_image, confidence, detected_at, person_id)
+           VALUES ($1, $2::vector, $3, $4, $5, $6)`,
+          [cameraId, embeddingStr, filePath, confidence, detectedAt, personId]
+        );
+
+        imported++;
+        if (imported % 50 === 0) {
+          console.log(`[reimport] Progress: ${imported} imported, ${skipped} skipped, ${errors} errors (${i + 1}/${files.length})`);
+        }
+      } catch (err) {
+        errors++;
+        if (errors <= 5) console.error(`[reimport] Error processing ${file}:`, err.message);
+      }
+    }
+
+    console.log(`[reimport] Complete: ${imported} imported, ${skipped} skipped, ${errors} errors out of ${files.length} files`);
+    reimportRunning = false;
+  } catch (err) {
+    console.error('[reimport] Fatal error:', err);
+    reimportRunning = false;
+  }
+});
+
+// GET /api/faces/reimport/status — Check if reimport is running
+router.get('/reimport/status', authenticate, async (_req, res) => {
+  const { rows } = await pool.query('SELECT count(*) AS total FROM face_embeddings');
+  res.json({ running: reimportRunning, total_embeddings: parseInt(rows[0].total, 10) });
 });
 
 export default router;

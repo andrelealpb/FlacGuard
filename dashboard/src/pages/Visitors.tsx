@@ -51,7 +51,8 @@ function Visitors() {
   const [selectedPdvIds, setSelectedPdvIds] = useState<string[]>([]);
   const [days, setDays] = useState<VisitorDay[]>([]);
   const [loading, setLoading] = useState(false);
-  const [resetting, setResetting] = useState(false);
+  const [reimporting, setReimporting] = useState(false);
+  const [reimportStatus, setReimportStatus] = useState("");
 
   // Date range
   const now = new Date();
@@ -122,19 +123,6 @@ function Visitors() {
     setDateTo(dateToYMD(to));
   };
 
-  const handleReset = async () => {
-    if (!confirm("Tem certeza que deseja resetar TODOS os dados de visitantes? Esta ação não pode ser desfeita.")) return;
-    setResetting(true);
-    try {
-      const res = await apiFetch("/api/faces/visitors/reset", { method: "POST" });
-      const data = await res.json();
-      alert(`Resetado com sucesso: ${data.deleted_embeddings} embeddings e ${data.deleted_daily_counts} contagens removidos.`);
-      setDays([]);
-    } catch {
-      alert("Erro ao resetar dados.");
-    }
-    setResetting(false);
-  };
 
   const maxVisitors = Math.max(1, ...days.map((d) => d.total_visitors));
   const totalPeriod = days.reduce((acc, d) => acc + d.total_visitors, 0);
@@ -149,17 +137,43 @@ function Visitors() {
       ? pdvs.find((p) => p.id === selectedPdvIds[0])?.name || "1 loja"
       : `${selectedPdvIds.length} lojas`;
 
+  const handleReimport = async () => {
+    if (!confirm("Reimportar todos os crops de rosto existentes? Isso pode demorar alguns minutos.")) return;
+    setReimporting(true);
+    setReimportStatus("Iniciando...");
+    try {
+      const res = await apiFetch("/api/faces/reimport", { method: "POST" });
+      const data = await res.json();
+      setReimportStatus(data.message || "Reimportação iniciada");
+      // Poll status every 5s
+      const poll = setInterval(async () => {
+        try {
+          const sr = await apiFetch("/api/faces/reimport/status");
+          const st = await sr.json();
+          setReimportStatus(`${st.total_embeddings} embeddings no banco${st.running ? " (em andamento...)" : " (concluído)"}`);
+          if (!st.running) { clearInterval(poll); setReimporting(false); }
+        } catch { clearInterval(poll); setReimporting(false); }
+      }, 5000);
+    } catch {
+      setReimportStatus("Erro ao iniciar reimportação");
+      setReimporting(false);
+    }
+  };
+
   return (
     <div style={{ maxWidth: "1000px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
         <h2 style={{ margin: 0, fontSize: "1.1rem" }}>Visitantes Distintos</h2>
-        <button
-          onClick={handleReset}
-          disabled={resetting}
-          style={{ ...btn, background: "#c62828", color: "#fff", border: "1px solid #c62828", opacity: resetting ? 0.5 : 1, fontSize: "0.7rem" }}
-        >
-          {resetting ? "Resetando..." : "Resetar contagem"}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          {reimportStatus && <span style={{ fontSize: "0.7rem", color: reimporting ? "#ff9800" : "#4caf50" }}>{reimportStatus}</span>}
+          <button
+            onClick={handleReimport}
+            disabled={reimporting}
+            style={{ ...btn, background: "#1565c0", color: "#fff", border: "1px solid #1565c0", opacity: reimporting ? 0.5 : 1, fontSize: "0.7rem" }}
+          >
+            {reimporting ? "Reimportando..." : "Reimportar faces"}
+          </button>
+        </div>
       </div>
 
       {/* Controls */}
