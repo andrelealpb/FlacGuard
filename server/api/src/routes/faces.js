@@ -341,4 +341,22 @@ router.post('/visitors/compute', authenticate, authorize('admin'), async (req, r
   }
 });
 
+// POST /api/faces/visitors/reset — Clear all visitor data and recount from scratch
+router.post('/visitors/reset', authenticate, authorize('admin'), async (_req, res) => {
+  try {
+    // Delete all face embeddings (visitor counting data)
+    const { rowCount: deletedEmbeddings } = await pool.query('DELETE FROM face_embeddings');
+    // Clear daily visitor counts
+    const { rowCount: deletedDaily } = await pool.query('DELETE FROM daily_visitors');
+
+    res.json({
+      message: 'Dados de visitantes resetados com sucesso',
+      deleted_embeddings: deletedEmbeddings,
+      deleted_daily_counts: deletedDaily,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
