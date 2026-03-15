@@ -67,8 +67,8 @@ router.post('/search', authenticate, authorize('admin'), async (req, res) => {
       face_image: r.face_image ? `/api/faces/image?path=${encodeURIComponent(r.face_image)}` : null,
     }));
 
-    // Group appearances by distinct time moments (within 60s on the same camera = same moment)
-    const TIME_GAP_MS = 60 * 1000;
+    // Group appearances by distinct time moments (within 5 min on the same camera = same visit)
+    const TIME_GAP_MS = 5 * 60 * 1000;
     const grouped = [];
     // Sort by camera then by time for grouping
     const sorted = [...appearances].sort((a, b) => {
@@ -336,6 +336,24 @@ router.post('/visitors/compute', authenticate, authorize('admin'), async (req, r
 
     const count = await countDistinctVisitors(camera_id, date);
     res.json({ camera_id, date, distinct_visitors: count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/faces/visitors/reset — Clear all visitor data and recount from scratch
+router.post('/visitors/reset', authenticate, authorize('admin'), async (_req, res) => {
+  try {
+    // Delete all face embeddings (visitor counting data)
+    const { rowCount: deletedEmbeddings } = await pool.query('DELETE FROM face_embeddings');
+    // Clear daily visitor counts
+    const { rowCount: deletedDaily } = await pool.query('DELETE FROM daily_visitors');
+
+    res.json({
+      message: 'Dados de visitantes resetados com sucesso',
+      deleted_embeddings: deletedEmbeddings,
+      deleted_daily_counts: deletedDaily,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

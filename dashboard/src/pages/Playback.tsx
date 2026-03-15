@@ -47,16 +47,34 @@ type PlaybackSpeed = 0.5 | 1 | 2 | 4;
 
 // ─── Helpers ───
 
-function formatTime(date: Date) {
-  return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+// Parse PG timestamp string "2026-03-15 18:11:00-03" → extract local time parts
+function parseLocalTime(raw: string): { h: number; m: number; s: number } {
+  // Handle both "2026-03-15 18:11:00-03" and ISO "2026-03-15T18:11:00.000-03:00"
+  const match = raw.match(/(\d{2}):(\d{2}):(\d{2})/);
+  if (match) return { h: parseInt(match[1]), m: parseInt(match[2]), s: parseInt(match[3]) };
+  const d = new Date(raw);
+  return { h: d.getHours(), m: d.getMinutes(), s: d.getSeconds() };
 }
 
-function formatTimeSeconds(date: Date) {
-  return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+function formatTime(dateOrStr: Date | string) {
+  if (typeof dateOrStr === "string") {
+    const { h, m } = parseLocalTime(dateOrStr);
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  }
+  return dateOrStr.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
 
-function formatDate(date: Date) {
-  return date.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" });
+function formatTimeSeconds(dateOrStr: Date | string) {
+  if (typeof dateOrStr === "string") {
+    const { h, m, s } = parseLocalTime(dateOrStr);
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return dateOrStr.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function formatDate(dateOrStr: Date | string) {
+  const d = typeof dateOrStr === "string" ? new Date(dateOrStr) : dateOrStr;
+  return d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 function formatDuration(seconds: number) {
@@ -104,9 +122,8 @@ function Timeline({
 
   const HOUR_LABELS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"));
 
-  const timeToPct = (date: Date) => ((date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds()) / 86400) * 100;
-
-  const secOfDay = (date: Date) => date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds();
+  const secOfDayStr = (raw: string) => { const t = parseLocalTime(raw); return t.h * 3600 + t.m * 60 + t.s; };
+  const timeToPctStr = (raw: string) => (secOfDayStr(raw) / 86400) * 100;
 
   const handleMouseMove = (e: React.MouseEvent) => {
     const rect = barRef.current?.getBoundingClientRect();
@@ -124,8 +141,8 @@ function Timeline({
     const totalSec = Math.floor(((e.clientX - rect.left) / rect.width) * 86400);
 
     const clicked = recordings.find((r) => {
-      const s = secOfDay(new Date(r.started_at));
-      const en = r.ended_at ? secOfDay(new Date(r.ended_at)) : s + (r.duration || 0);
+      const s = secOfDayStr(r.started_at);
+      const en = r.ended_at ? secOfDayStr(r.ended_at) : s + (r.duration || 0);
       return totalSec >= s && totalSec <= en;
     });
 
@@ -150,14 +167,13 @@ function Timeline({
           <div key={i} style={{ position: "absolute", left: `${(i / 24) * 100}%`, top: 0, bottom: 0, width: "1px", background: "rgba(255,255,255,0.08)" }} />
         ))}
         {recordings.map((r) => {
-          const start = new Date(r.started_at);
-          const end = r.ended_at ? new Date(r.ended_at) : new Date(start.getTime() + (r.duration || 60) * 1000);
-          const leftPct = timeToPct(start);
-          const widthPct = Math.max(timeToPct(end) - leftPct, 0.15);
+          const leftPct = timeToPctStr(r.started_at);
+          const endPct = r.ended_at ? timeToPctStr(r.ended_at) : leftPct + ((r.duration || 60) / 86400) * 100;
+          const widthPct = Math.max(endPct - leftPct, 0.15);
           const isMot = r.recording_type === "motion";
           const isSel = selectedRecording?.id === r.id;
           return (
-            <div key={r.id} title={`${formatTimeSeconds(start)} — ${formatTimeSeconds(end)}`}
+            <div key={r.id} title={`${formatTimeSeconds(r.started_at)} — ${formatTimeSeconds(r.ended_at || r.started_at)}`}
               style={{ position: "absolute", left: `${leftPct}%`, width: `${widthPct}%`, top: isMot ? "2px" : "5px", bottom: isMot ? "2px" : "5px",
                 background: isMot ? (isSel ? "#ff9800" : "#ff980088") : (isSel ? "#4caf50" : "#4caf5088"),
                 borderRadius: "2px", border: isSel ? "1px solid #fff" : "none" }} />
@@ -376,23 +392,42 @@ function VideoPlayer({
     if (idx < recordings.length - 1) onSelectRecording(recordings[idx + 1]);
   }, [recording.id, recordings, onSelectRecording]);
 
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
   const toggleFs = useCallback(() => {
     const c = containerRef.current; if (!c) return;
     document.fullscreenElement ? document.exitFullscreen() : c.requestFullscreen().catch(() => {});
   }, []);
 
-  const recStart = new Date(recording.started_at);
-  const currentTs = new Date(recStart.getTime() + currentTime * 1000);
+  // Build current timestamp string in camera local time
+  const recStartLocal = parseLocalTime(recording.started_at);
+  const recStartSec = recStartLocal.h * 3600 + recStartLocal.m * 60 + recStartLocal.s;
+  const currentTotalSec = recStartSec + Math.floor(currentTime);
+  const curH = Math.floor(currentTotalSec / 3600) % 24;
+  const curM = Math.floor((currentTotalSec % 3600) / 60);
+  const curS = currentTotalSec % 60;
+  const currentTsStr = `${String(curH).padStart(2, "0")}:${String(curM).padStart(2, "0")}:${String(curS).padStart(2, "0")}`;
   const speeds: PlaybackSpeed[] = [0.5, 1, 2, 4];
 
   const cb: React.CSSProperties = { background: "none", border: "none", color: "#fff", cursor: "pointer", padding: "0.25rem 0.35rem", fontSize: "0.95rem", lineHeight: 1, opacity: 0.85 };
 
   return (
-    <div ref={containerRef} style={{ background: "#000", borderRadius: "6px", overflow: "hidden", border: "1px solid #333" }}>
+    <div ref={containerRef} style={{
+      background: "#000", borderRadius: isFullscreen ? 0 : "6px", overflow: "hidden", border: isFullscreen ? "none" : "1px solid #333",
+      ...(isFullscreen ? { display: "flex", flexDirection: "column" as const, height: "100vh" } : {}),
+    }}>
       {/* Video + Canvas overlay container */}
-      <div style={{ position: "relative" }}>
+      <div style={{ position: "relative", flex: isFullscreen ? 1 : undefined, display: isFullscreen ? "flex" : undefined,
+        alignItems: isFullscreen ? "center" : undefined, justifyContent: isFullscreen ? "center" : undefined, overflow: "hidden" }}>
         <video ref={videoRef} src={streamUrl}
-          style={{ width: "100%", display: "block", background: "#000", maxHeight: "45vh" }}
+          style={{ width: "100%", display: "block", background: "#000",
+            ...(isFullscreen ? { maxHeight: "100%", objectFit: "contain" } : { maxHeight: "75vh" }) }}
           onTimeUpdate={() => setCurrent(videoRef.current?.currentTime || 0)}
           onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
           onPlay={() => setPlaying(true)} onPause={handlePause}
@@ -428,7 +463,7 @@ function VideoPlayer({
       {/* Info bar */}
       <div style={{ background: "rgba(0,0,0,0.8)", color: "#4caf50", padding: "0.15rem 0.5rem", fontSize: "0.7rem", fontFamily: "monospace",
         display: "flex", justifyContent: "space-between" }}>
-        <span>{formatTimeSeconds(currentTs)}</span>
+        <span>{currentTsStr}</span>
         <span style={{ color: "#999" }}>
           {recording.camera_name} | {recording.recording_type === "motion" ? "Mov" : "Rec"}
           {recording.file_size ? ` | ${formatBytes(recording.file_size)}` : ""}
@@ -487,8 +522,12 @@ function VideoPlayer({
           </button>
           <a href={`/api/recordings/${recording.id}/thumbnail?token=${encodeURIComponent(token)}`}
             download={`thumb-${recording.id}.jpg`}
-            title="Baixar imagem"
+            title="Baixar imagem (snapshot)"
             style={{ ...cb, textDecoration: "none", color: "#fff" }}>&#128247;</a>
+          <a href={`/api/recordings/${recording.id}/stream?token=${encodeURIComponent(token)}&download=1`}
+            download
+            title="Baixar vídeo"
+            style={{ ...cb, textDecoration: "none", color: "#fff" }}>&#11015;</a>
           <button onClick={() => { setMuted(!muted); if (videoRef.current) videoRef.current.muted = !muted; }} style={cb}>
             {muted ? "\uD83D\uDD07" : "\uD83D\uDD0A"}
           </button>
@@ -513,10 +552,8 @@ function RecordingList({ recordings, selectedRecording, onSelect, token }: {
   if (!recordings.length) return <div style={{ textAlign: "center", padding: "1.5rem 0.5rem", color: "#999", fontSize: "0.8rem" }}>Nenhuma gravação neste dia.</div>;
 
   return (
-    <div ref={ref} style={{ maxHeight: "350px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+    <div ref={ref} style={{ maxHeight: "70vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
       {recordings.map((r) => {
-        const start = new Date(r.started_at);
-        const end = r.ended_at ? new Date(r.ended_at) : null;
         const sel = selectedRecording?.id === r.id;
         const mot = r.recording_type === "motion";
         return (
@@ -526,7 +563,7 @@ function RecordingList({ recordings, selectedRecording, onSelect, token }: {
             <div style={{ width: 3, minHeight: 28, borderRadius: "2px", background: mot ? "#ff9800" : "#4caf50", flexShrink: 0 }} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontWeight: 600, fontSize: "0.8rem" }}>{formatTime(start)}{end ? ` — ${formatTime(end)}` : ""}</span>
+                <span style={{ fontWeight: 600, fontSize: "0.8rem" }}>{formatTime(r.started_at)}{r.ended_at ? ` — ${formatTime(r.ended_at)}` : ""}</span>
                 <span style={{ fontSize: "0.6rem", padding: "0.05rem 0.25rem", borderRadius: "2px",
                   background: mot ? "#fff3e0" : "#e8f5e9", color: mot ? "#e65100" : "#2e7d32", fontWeight: 600, flexShrink: 0 }}>
                   {mot ? "MOV" : "REC"}
@@ -654,8 +691,8 @@ function Playback() {
     const targetSec = time.getHours() * 3600 + time.getMinutes() * 60 + time.getSeconds();
     let closest: Recording | null = null, closestDist = Infinity;
     for (const r of recordings) {
-      const s = new Date(r.started_at);
-      const dist = Math.abs(s.getHours() * 3600 + s.getMinutes() * 60 + s.getSeconds() - targetSec);
+      const t = parseLocalTime(r.started_at);
+      const dist = Math.abs(t.h * 3600 + t.m * 60 + t.s - targetSec);
       if (dist < closestDist) { closestDist = dist; closest = r; }
     }
     if (closest) setSelectedRecording(closest);
@@ -668,7 +705,7 @@ function Playback() {
   const btn: React.CSSProperties = { padding: "0.25rem 0.5rem", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", fontSize: "0.8rem", background: "#fff" };
 
   return (
-    <div style={{ maxWidth: "1200px" }}>
+    <div style={{ maxWidth: "1600px" }}>
       <h2 style={{ margin: "0 0 0.5rem", fontSize: "1rem" }}>Gravações</h2>
 
       {/* Controls */}
@@ -718,7 +755,7 @@ function Playback() {
                 token={token} apiFetch={apiFetch} onFaceClick={handleFaceClick} />
             ) : (
               <div style={{ background: "#000", borderRadius: "6px", aspectRatio: "16/9", display: "flex", alignItems: "center", justifyContent: "center",
-                color: "#666", fontSize: "0.85rem", maxHeight: "45vh" }}>
+                color: "#666", fontSize: "0.85rem", maxHeight: "75vh" }}>
                 {recordings.length > 0 ? "Selecione uma gravação na timeline ou na lista" : selectedCameraId ? "Nenhuma gravação neste dia" : "Selecione uma câmera"}
               </div>
             )}

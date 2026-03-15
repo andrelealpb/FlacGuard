@@ -50,8 +50,10 @@ router.get('/by-day', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'camera_id and date (YYYY-MM-DD) are required' });
     }
 
-    const dayStart = `${date}T00:00:00`;
-    const dayEnd = `${date}T23:59:59`;
+    // Session timezone is set to camera timezone (America/Sao_Paulo) in pool.js
+    // so PG interprets these boundaries in the camera's local time
+    const dayStart = `${date} 00:00:00`;
+    const dayEnd = `${date} 23:59:59`;
 
     const { rows } = await pool.query(
       `SELECT r.id, r.file_path, r.file_size, r.duration, r.started_at, r.ended_at,
@@ -103,8 +105,10 @@ router.get('/:id/stream', authenticate, async (req, res) => {
     const stat = statSync(filePath);
     const fileSize = stat.size;
     const range = req.headers.range;
+    const disposition = req.query.download === '1' ? 'attachment' : 'inline';
+    const fname = basename(filePath);
 
-    if (range) {
+    if (range && disposition !== 'attachment') {
       // Partial content (range request for seeking)
       const parts = range.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
@@ -116,14 +120,14 @@ router.get('/:id/stream', authenticate, async (req, res) => {
         'Accept-Ranges': 'bytes',
         'Content-Length': chunkSize,
         'Content-Type': 'video/mp4',
-        'Content-Disposition': `inline; filename="${basename(filePath)}"`,
+        'Content-Disposition': `${disposition}; filename="${fname}"`,
       });
       createReadStream(filePath, { start, end }).pipe(res);
     } else {
       res.writeHead(200, {
         'Content-Length': fileSize,
         'Content-Type': 'video/mp4',
-        'Content-Disposition': `inline; filename="${basename(filePath)}"`,
+        'Content-Disposition': `${disposition}; filename="${fname}"`,
       });
       createReadStream(filePath).pipe(res);
     }
@@ -306,8 +310,8 @@ router.post('/search-by-embedding', authenticate, async (req, res) => {
       face_image: r.face_image ? `/api/faces/image?path=${encodeURIComponent(r.face_image)}` : null,
     }));
 
-    // Group by distinct time moments (within 60s on the same camera = same moment)
-    const TIME_GAP_MS = 60 * 1000;
+    // Group by distinct time moments (within 5 min on the same camera = same visit)
+    const TIME_GAP_MS = 5 * 60 * 1000;
     const grouped = [];
     const sorted = [...appearances].sort((a, b) => {
       if (a.camera_id !== b.camera_id) return a.camera_id.localeCompare(b.camera_id);

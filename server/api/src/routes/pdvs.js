@@ -200,10 +200,11 @@ router.get('/:id/events', authenticate, async (req, res) => {
 });
 
 // GET /api/pdvs/:id/visitors — Distinct visitors per day
+// :id can be "all" or a single PDV id. Also supports ?pdv_ids=id1,id2,id3 for multi-select.
 router.get('/:id/visitors', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const { from, to } = req.query;
+    const { from, to, pdv_ids } = req.query;
 
     const now = new Date();
     const defaultFrom = new Date(now);
@@ -212,8 +213,15 @@ router.get('/:id/visitors', authenticate, async (req, res) => {
     const dateFrom = from || defaultFrom.toISOString().split('T')[0];
     const dateTo = to || now.toISOString().split('T')[0];
 
-    const pdvId = id === 'all' ? null : id;
-    const visitors = await getVisitorsByPdv(pdvId, dateFrom, dateTo);
+    // Support multi-PDV via query param or single via path param
+    let pdvIds = null;
+    if (pdv_ids) {
+      pdvIds = pdv_ids.split(',').filter(Boolean);
+    } else if (id !== 'all') {
+      pdvIds = [id];
+    }
+
+    const visitors = await getVisitorsByPdv(pdvIds, dateFrom, dateTo);
     res.json({ pdv_id: id, from: dateFrom, to: dateTo, days: visitors });
   } catch (err) {
     res.status(500).json({ error: err.message });

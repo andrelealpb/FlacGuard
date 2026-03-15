@@ -5,7 +5,7 @@ import { join } from 'path';
 const FACE_SERVICE_URL = process.env.FACE_SERVICE_URL || 'http://face-service:8001';
 const FACE_DIR = '/data/recordings/faces';
 const SIMILARITY_THRESHOLD = 0.85; // Watchlist alert threshold
-const VISITOR_THRESHOLD = 0.75;    // Same-person threshold for visitor dedup
+const VISITOR_THRESHOLD = 0.65;    // Same-person threshold for visitor dedup (lowered to reduce over-counting)
 
 // Ensure face image directory exists
 if (!existsSync(FACE_DIR)) {
@@ -104,9 +104,10 @@ export async function storeFaceEmbeddings(cameraId, faces, detectedAt) {
     // Find an existing person_id by matching against recent embeddings (last 30 days)
     // Uses pgvector HNSW index for fast similarity search
     let personId = null;
+    let skipStore = false;
     try {
       const { rows: matches } = await pool.query(
-        `SELECT person_id, 1 - (embedding <=> $1::vector) AS similarity
+        `SELECT person_id, 1 - (embedding <=> $1::vector) AS similarity, camera_id, detected_at
          FROM face_embeddings
          WHERE person_id IS NOT NULL
            AND detected_at > now() - interval '30 days'
@@ -117,10 +118,21 @@ export async function storeFaceEmbeddings(cameraId, faces, detectedAt) {
 
       if (matches.length > 0 && matches[0].similarity >= VISITOR_THRESHOLD) {
         personId = matches[0].person_id;
+
+        // Temporal dedup: skip storing if same person detected on same camera within last 30s
+        if (matches[0].camera_id === cameraId) {
+          const lastDetected = new Date(matches[0].detected_at).getTime();
+          const now = (detectedAt || new Date()).getTime();
+          if (Math.abs(now - lastDetected) < 30000) {
+            skipStore = true;
+          }
+        }
       }
     } catch {
       // If person matching fails, continue without linking
     }
+
+    if (skipStore) continue;
 
     // Generate new person_id if no match found
     if (!personId) {
@@ -321,14 +333,19 @@ export async function countDistinctVisitors(cameraId, date) {
 
 /**
  * Get visitor counts over a date range, deduplicated across cameras within each PDV.
- * When viewing "all", shows breakdown by PDV/loja (not by camera).
- * When viewing a single PDV, shows total per day for that PDV.
+ * pdvIds can be null (all), a single string, or an array of IDs.
  */
-export async function getVisitorsByPdv(pdvId, from, to) {
-  const params = pdvId ? [pdvId, from, to] : [from, to];
-  const fromIdx = pdvId ? '$2' : '$1';
-  const toIdx = pdvId ? '$3' : '$2';
-  const pdvFilter = pdvId ? 'AND c.pdv_id = $1' : '';
+export async function getVisitorsByPdv(pdvIds, from, to) {
+  // Normalize pdvIds: null = all, string = single, array = multiple
+  let pdvFilter = '';
+  const params = [from, to];
+  if (pdvIds) {
+    const ids = Array.isArray(pdvIds) ? pdvIds : [pdvIds];
+    if (ids.length > 0) {
+      params.push(ids);
+      pdvFilter = `AND c.pdv_id = ANY($3)`;
+    }
+  }
 
   // Count distinct persons per PDV per day (cross-camera dedup within each PDV)
   const { rows } = await pool.query(
@@ -350,13 +367,13 @@ export async function getVisitorsByPdv(pdvId, from, to) {
        JOIN cameras c2 ON c2.id = fe2.camera_id
        JOIN pdvs p2 ON p2.id = c2.pdv_id
        WHERE fe2.person_id IS NOT NULL
-         AND fe2.detected_at::date >= ${fromIdx}
-         AND fe2.detected_at::date <= ${toIdx}
+         AND fe2.detected_at::date >= $1
+         AND fe2.detected_at::date <= $2
        GROUP BY p2.id, fe2.detected_at::date
      ) pdv_counts ON pdv_counts.pdv_id = p.id AND pdv_counts.d = fe.detected_at::date
      WHERE fe.person_id IS NOT NULL
-       AND fe.detected_at::date >= ${fromIdx}
-       AND fe.detected_at::date <= ${toIdx}
+       AND fe.detected_at::date >= $1
+       AND fe.detected_at::date <= $2
        ${pdvFilter}
      GROUP BY fe.detected_at::date
      ORDER BY fe.detected_at::date DESC`,
@@ -365,6 +382,7 @@ export async function getVisitorsByPdv(pdvId, from, to) {
 
   // If no person_id data, fall back to daily_visitors table (legacy)
   if (rows.length === 0) {
+    const pdvFilterDv = pdvFilter ? pdvFilter.replace('c.pdv_id', 'p.id') : '';
     const { rows: fallback } = await pool.query(
       `SELECT to_char(dv.visit_date, 'YYYY-MM-DD') AS visit_date,
               SUM(dv.count)::int AS total_visitors,
@@ -372,9 +390,9 @@ export async function getVisitorsByPdv(pdvId, from, to) {
        FROM daily_visitors dv
        JOIN cameras c ON c.id = dv.camera_id
        JOIN pdvs p ON p.id = c.pdv_id
-       WHERE dv.visit_date >= ${fromIdx}
-         AND dv.visit_date <= ${toIdx}
-         ${pdvFilter}
+       WHERE dv.visit_date >= $1
+         AND dv.visit_date <= $2
+         ${pdvFilterDv}
        GROUP BY dv.visit_date
        ORDER BY dv.visit_date DESC`,
       params
