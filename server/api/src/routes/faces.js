@@ -67,8 +67,8 @@ router.post('/search', authenticate, authorize('admin'), async (req, res) => {
       face_image: r.face_image ? `/api/faces/image?path=${encodeURIComponent(r.face_image)}` : null,
     }));
 
-    // Group appearances by distinct time moments (within 60s on the same camera = same moment)
-    const TIME_GAP_MS = 60 * 1000;
+    // Group appearances by distinct time moments (within 5 min on the same camera = same visit)
+    const TIME_GAP_MS = 5 * 60 * 1000;
     const grouped = [];
     // Sort by camera then by time for grouping
     const sorted = [...appearances].sort((a, b) => {

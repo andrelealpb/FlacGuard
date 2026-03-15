@@ -308,8 +308,8 @@ router.post('/search-by-embedding', authenticate, async (req, res) => {
       face_image: r.face_image ? `/api/faces/image?path=${encodeURIComponent(r.face_image)}` : null,
     }));
 
-    // Group by distinct time moments (within 60s on the same camera = same moment)
-    const TIME_GAP_MS = 60 * 1000;
+    // Group by distinct time moments (within 5 min on the same camera = same visit)
+    const TIME_GAP_MS = 5 * 60 * 1000;
     const grouped = [];
     const sorted = [...appearances].sort((a, b) => {
       if (a.camera_id !== b.camera_id) return a.camera_id.localeCompare(b.camera_id);
