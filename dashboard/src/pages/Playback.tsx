@@ -491,13 +491,25 @@ function VideoPlayer({
       </div>
 
       {/* Controls */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.2rem 0.4rem", background: "#111", color: "#fff", fontSize: "0.75rem" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.1rem" }}>
-          <button onClick={goToPrev} style={cb} title="Anterior">&#9198;</button>
-          <button onClick={() => skip(-10)} style={cb} title="-10s">&#8634;</button>
-          <button onClick={togglePlay} style={{ ...cb, fontSize: "1.15rem" }}>{playing ? "\u23F8" : "\u25B6"}</button>
-          <button onClick={() => skip(10)} style={cb} title="+10s">&#8635;</button>
-          <button onClick={goToNext} style={cb} title="Próxima">&#9197;</button>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.25rem 0.5rem", background: "#111", color: "#fff", fontSize: "0.75rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.15rem" }}>
+          <button onClick={goToPrev} style={cb} title="Anterior">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+          </button>
+          <button onClick={() => skip(-10)} style={cb} title="-10s">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 5V1l-5 5 5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6h-2c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/><text x="10" y="16.5" fontSize="7.5" fontWeight="700" textAnchor="middle" fontFamily="sans-serif" fill="currentColor">10</text></svg>
+          </button>
+          <button onClick={togglePlay} style={{ ...cb, padding: "0.25rem 0.45rem" }}>
+            {playing
+              ? <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+              : <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>}
+          </button>
+          <button onClick={() => skip(10)} style={cb} title="+10s">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M18 13c0 3.31-2.69 6-6 6s-6-2.69-6-6 2.69-6 6-6v4l5-5-5-5v4c-4.42 0-8 3.58-8 8s3.58 8 8 8 8-3.58 8-8h-2z"/><text x="13" y="16.5" fontSize="7.5" fontWeight="700" textAnchor="middle" fontFamily="sans-serif" fill="currentColor">10</text></svg>
+          </button>
+          <button onClick={goToNext} style={cb} title="Próxima">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontFamily: "monospace" }}>
           <span>{formatDuration(currentTime)}/{formatDuration(duration)}</span>
@@ -511,7 +523,7 @@ function VideoPlayer({
             ))}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.15rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.2rem" }}>
           {/* Face detection toggle */}
           <button
             onClick={() => {
@@ -522,29 +534,48 @@ function VideoPlayer({
             }}
             style={{
               ...cb,
-              fontSize: "0.75rem",
               background: faceDetectOn ? "rgba(76,175,80,0.3)" : faceServiceOk === false ? "rgba(198,40,40,0.3)" : "none",
               borderRadius: "3px",
-              padding: "0.2rem 0.4rem",
+              padding: "0.2rem 0.35rem",
               opacity: faceServiceOk === false ? 0.4 : 0.85,
               cursor: faceServiceOk === false ? "not-allowed" : "pointer",
             }}
             title={faceServiceOk === false ? "Serviço de detecção facial indisponível" : faceDetectOn ? "Desativar detecção facial" : "Ativar detecção facial"}
           >
-            &#128065;
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+            </svg>
           </button>
           <a href={`/api/recordings/${recording.id}/thumbnail?token=${encodeURIComponent(token)}`}
             download={buildDownloadName().replace('.mp4', '.jpg')}
             title="Baixar imagem (snapshot)"
-            style={{ ...cb, textDecoration: "none", color: "#fff" }}>&#128247;</a>
+            style={{ ...cb, textDecoration: "none", color: "#fff", display: "flex", alignItems: "center" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
+            </svg>
+          </a>
           <a href={`/api/recordings/${recording.id}/stream?token=${encodeURIComponent(token)}&download=1`}
             download={buildDownloadName()}
             title="Baixar vídeo"
-            style={{ ...cb, textDecoration: "none", color: "#fff" }}>&#11015;</a>
+            style={{ ...cb, textDecoration: "none", color: "#fff", display: "flex", alignItems: "center" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+          </a>
           <button onClick={() => { setMuted(!muted); if (videoRef.current) videoRef.current.muted = !muted; }} style={cb}>
-            {muted ? "\uD83D\uDD07" : "\uD83D\uDD0A"}
+            {muted
+              ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>
+                </svg>
+              : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 010 14.14"/><path d="M15.54 8.46a5 5 0 010 7.07"/>
+                </svg>}
           </button>
-          <button onClick={toggleFs} style={cb} title="Tela cheia">&#x26F6;</button>
+          <button onClick={toggleFs} style={cb} title="Tela cheia">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
+            </svg>
+          </button>
         </div>
       </div>
     </div>
@@ -594,7 +625,9 @@ function RecordingList({ recordings, selectedRecording, onSelect, token }: {
               style={{ flexShrink: 0, padding: "0.2rem 0.35rem", borderRadius: "3px", background: "#f5f5f5",
                 border: "1px solid #ddd", cursor: "pointer", fontSize: "0.75rem", color: "#555", textDecoration: "none",
                 display: "flex", alignItems: "center" }}>
-              &#128247;
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
+              </svg>
             </a>
           </div>
         );
