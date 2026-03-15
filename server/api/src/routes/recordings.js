@@ -45,21 +45,15 @@ router.get('/', authenticate, async (req, res) => {
 // GET /api/recordings/by-day — Get recordings for a camera on a specific day (for timeline)
 router.get('/by-day', authenticate, async (req, res) => {
   try {
-    const { camera_id, date, tz_offset } = req.query;
+    const { camera_id, date } = req.query;
     if (!camera_id || !date) {
       return res.status(400).json({ error: 'camera_id and date (YYYY-MM-DD) are required' });
     }
 
-    // tz_offset is in minutes from UTC (e.g. 180 for BRT = UTC-3)
-    // Build timezone-aware boundaries so we filter by the client's local day
-    const offsetMin = parseInt(tz_offset) || 0;
-    const sign = offsetMin <= 0 ? '+' : '-';
-    const absH = String(Math.floor(Math.abs(offsetMin) / 60)).padStart(2, '0');
-    const absM = String(Math.abs(offsetMin) % 60).padStart(2, '0');
-    const tzSuffix = `${sign}${absH}:${absM}`;
-
-    const dayStart = `${date}T00:00:00${tzSuffix}`;
-    const dayEnd = `${date}T23:59:59${tzSuffix}`;
+    // Session timezone is set to camera timezone (America/Sao_Paulo) in pool.js
+    // so PG interprets these boundaries in the camera's local time
+    const dayStart = `${date} 00:00:00`;
+    const dayEnd = `${date} 23:59:59`;
 
     const { rows } = await pool.query(
       `SELECT r.id, r.file_path, r.file_size, r.duration, r.started_at, r.ended_at,
