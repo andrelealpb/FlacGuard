@@ -35,9 +35,9 @@ export function startRecording(camera, recordingType = 'motion', thumbnailPath =
   const startedAt = new Date();
 
   // Use HLS as source: FFmpeg will start from the earliest available segment
-  // With hls_playlist_length=30 and hls_fragment=3, we get ~12s of pre-buffer
+  // With hls_playlist_length=60 and hls_fragment=3, we get ~24s of pre-buffer
   const ffmpegArgs = [
-    '-live_start_index', '-4',  // Start 4 segments back (~12s pre-buffer)
+    '-live_start_index', '-8',  // Start 8 segments back (~24s pre-buffer)
     '-i', hlsUrl,
     '-c', 'copy',               // No re-encoding
     '-movflags', '+faststart',   // Optimize for web playback

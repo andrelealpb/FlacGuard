@@ -5,7 +5,7 @@ import { join } from 'path';
 const FACE_SERVICE_URL = process.env.FACE_SERVICE_URL || 'http://face-service:8001';
 const FACE_DIR = '/data/recordings/faces';
 const SIMILARITY_THRESHOLD = 0.85; // Watchlist alert threshold
-const VISITOR_THRESHOLD = 0.75;    // Same-person threshold for visitor dedup
+const VISITOR_THRESHOLD = 0.65;    // Same-person threshold for visitor dedup (lowered to reduce over-counting)
 
 // Ensure face image directory exists
 if (!existsSync(FACE_DIR)) {
@@ -104,9 +104,10 @@ export async function storeFaceEmbeddings(cameraId, faces, detectedAt) {
     // Find an existing person_id by matching against recent embeddings (last 30 days)
     // Uses pgvector HNSW index for fast similarity search
     let personId = null;
+    let skipStore = false;
     try {
       const { rows: matches } = await pool.query(
-        `SELECT person_id, 1 - (embedding <=> $1::vector) AS similarity
+        `SELECT person_id, 1 - (embedding <=> $1::vector) AS similarity, camera_id, detected_at
          FROM face_embeddings
          WHERE person_id IS NOT NULL
            AND detected_at > now() - interval '30 days'
@@ -117,10 +118,21 @@ export async function storeFaceEmbeddings(cameraId, faces, detectedAt) {
 
       if (matches.length > 0 && matches[0].similarity >= VISITOR_THRESHOLD) {
         personId = matches[0].person_id;
+
+        // Temporal dedup: skip storing if same person detected on same camera within last 30s
+        if (matches[0].camera_id === cameraId) {
+          const lastDetected = new Date(matches[0].detected_at).getTime();
+          const now = (detectedAt || new Date()).getTime();
+          if (Math.abs(now - lastDetected) < 30000) {
+            skipStore = true;
+          }
+        }
       }
     } catch {
       // If person matching fails, continue without linking
     }
+
+    if (skipStore) continue;
 
     // Generate new person_id if no match found
     if (!personId) {

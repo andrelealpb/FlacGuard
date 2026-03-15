@@ -103,8 +103,10 @@ router.get('/:id/stream', authenticate, async (req, res) => {
     const stat = statSync(filePath);
     const fileSize = stat.size;
     const range = req.headers.range;
+    const disposition = req.query.download === '1' ? 'attachment' : 'inline';
+    const fname = basename(filePath);
 
-    if (range) {
+    if (range && disposition !== 'attachment') {
       // Partial content (range request for seeking)
       const parts = range.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
@@ -116,14 +118,14 @@ router.get('/:id/stream', authenticate, async (req, res) => {
         'Accept-Ranges': 'bytes',
         'Content-Length': chunkSize,
         'Content-Type': 'video/mp4',
-        'Content-Disposition': `inline; filename="${basename(filePath)}"`,
+        'Content-Disposition': `${disposition}; filename="${fname}"`,
       });
       createReadStream(filePath, { start, end }).pipe(res);
     } else {
       res.writeHead(200, {
         'Content-Length': fileSize,
         'Content-Type': 'video/mp4',
-        'Content-Disposition': `inline; filename="${basename(filePath)}"`,
+        'Content-Disposition': `${disposition}; filename="${fname}"`,
       });
       createReadStream(filePath).pipe(res);
     }

@@ -376,6 +376,14 @@ function VideoPlayer({
     if (idx < recordings.length - 1) onSelectRecording(recordings[idx + 1]);
   }, [recording.id, recordings, onSelectRecording]);
 
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
   const toggleFs = useCallback(() => {
     const c = containerRef.current; if (!c) return;
     document.fullscreenElement ? document.exitFullscreen() : c.requestFullscreen().catch(() => {});
@@ -388,11 +396,16 @@ function VideoPlayer({
   const cb: React.CSSProperties = { background: "none", border: "none", color: "#fff", cursor: "pointer", padding: "0.25rem 0.35rem", fontSize: "0.95rem", lineHeight: 1, opacity: 0.85 };
 
   return (
-    <div ref={containerRef} style={{ background: "#000", borderRadius: "6px", overflow: "hidden", border: "1px solid #333" }}>
+    <div ref={containerRef} style={{
+      background: "#000", borderRadius: isFullscreen ? 0 : "6px", overflow: "hidden", border: isFullscreen ? "none" : "1px solid #333",
+      ...(isFullscreen ? { display: "flex", flexDirection: "column" as const, height: "100vh" } : {}),
+    }}>
       {/* Video + Canvas overlay container */}
-      <div style={{ position: "relative" }}>
+      <div style={{ position: "relative", flex: isFullscreen ? 1 : undefined, display: isFullscreen ? "flex" : undefined,
+        alignItems: isFullscreen ? "center" : undefined, justifyContent: isFullscreen ? "center" : undefined, overflow: "hidden" }}>
         <video ref={videoRef} src={streamUrl}
-          style={{ width: "100%", display: "block", background: "#000", maxHeight: "45vh" }}
+          style={{ width: "100%", display: "block", background: "#000",
+            ...(isFullscreen ? { maxHeight: "100%", objectFit: "contain" } : { maxHeight: "75vh" }) }}
           onTimeUpdate={() => setCurrent(videoRef.current?.currentTime || 0)}
           onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
           onPlay={() => setPlaying(true)} onPause={handlePause}
@@ -487,8 +500,12 @@ function VideoPlayer({
           </button>
           <a href={`/api/recordings/${recording.id}/thumbnail?token=${encodeURIComponent(token)}`}
             download={`thumb-${recording.id}.jpg`}
-            title="Baixar imagem"
+            title="Baixar imagem (snapshot)"
             style={{ ...cb, textDecoration: "none", color: "#fff" }}>&#128247;</a>
+          <a href={`/api/recordings/${recording.id}/stream?token=${encodeURIComponent(token)}&download=1`}
+            download
+            title="Baixar vídeo"
+            style={{ ...cb, textDecoration: "none", color: "#fff" }}>&#11015;</a>
           <button onClick={() => { setMuted(!muted); if (videoRef.current) videoRef.current.muted = !muted; }} style={cb}>
             {muted ? "\uD83D\uDD07" : "\uD83D\uDD0A"}
           </button>
@@ -513,7 +530,7 @@ function RecordingList({ recordings, selectedRecording, onSelect, token }: {
   if (!recordings.length) return <div style={{ textAlign: "center", padding: "1.5rem 0.5rem", color: "#999", fontSize: "0.8rem" }}>Nenhuma gravação neste dia.</div>;
 
   return (
-    <div ref={ref} style={{ maxHeight: "350px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+    <div ref={ref} style={{ maxHeight: "70vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
       {recordings.map((r) => {
         const start = new Date(r.started_at);
         const end = r.ended_at ? new Date(r.ended_at) : null;
@@ -668,7 +685,7 @@ function Playback() {
   const btn: React.CSSProperties = { padding: "0.25rem 0.5rem", border: "1px solid #ccc", borderRadius: "4px", cursor: "pointer", fontSize: "0.8rem", background: "#fff" };
 
   return (
-    <div style={{ maxWidth: "1200px" }}>
+    <div style={{ maxWidth: "1600px" }}>
       <h2 style={{ margin: "0 0 0.5rem", fontSize: "1rem" }}>Gravações</h2>
 
       {/* Controls */}
@@ -718,7 +735,7 @@ function Playback() {
                 token={token} apiFetch={apiFetch} onFaceClick={handleFaceClick} />
             ) : (
               <div style={{ background: "#000", borderRadius: "6px", aspectRatio: "16/9", display: "flex", alignItems: "center", justifyContent: "center",
-                color: "#666", fontSize: "0.85rem", maxHeight: "45vh" }}>
+                color: "#666", fontSize: "0.85rem", maxHeight: "75vh" }}>
                 {recordings.length > 0 ? "Selecione uma gravação na timeline ou na lista" : selectedCameraId ? "Nenhuma gravação neste dia" : "Selecione uma câmera"}
               </div>
             )}
