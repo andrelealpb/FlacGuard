@@ -66,14 +66,29 @@ done
 echo "$LOG_PREFIX Restarting containers..."
 docker compose up -d --remove-orphans
 
-# Wait for services to start
+# Wait for services to start (face-service loads ML models and needs more time)
 echo "$LOG_PREFIX Waiting for services..."
-sleep 15
+sleep 10
 
-# Check health of each service and get container status
+# Poll face-service health until models are loaded (up to 120s)
+echo "$LOG_PREFIX Waiting for face-service models to load..."
+FACE_READY=false
+for i in $(seq 1 22); do
+  FACE_HEALTH=$(curl -sf http://localhost:8001/health 2>/dev/null || echo '')
+  if echo "$FACE_HEALTH" | grep -q '"ok"'; then
+    FACE_READY=true
+    echo "$LOG_PREFIX Face service ready after ~$((10 + i * 5))s"
+    break
+  fi
+  sleep 5
+done
+
+# Check health of each service
 API_HEALTH=$(curl -sf http://localhost:8000/health 2>/dev/null || echo '{"status":"error"}')
 RTMP_HEALTH=$(curl -sf http://localhost:8080/health 2>/dev/null || echo '{"status":"error"}')
-FACE_HEALTH=$(curl -sf http://localhost:8001/health 2>/dev/null || echo '{"status":"error"}')
+if [ "$FACE_READY" = "false" ]; then
+  FACE_HEALTH=$(curl -sf http://localhost:8001/health 2>/dev/null || echo '{"status":"error"}')
+fi
 
 echo "$LOG_PREFIX API:  $API_HEALTH"
 echo "$LOG_PREFIX RTMP: $RTMP_HEALTH"
