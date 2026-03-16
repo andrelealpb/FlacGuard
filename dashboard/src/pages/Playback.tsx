@@ -225,13 +225,21 @@ function VideoPlayer({
 
   const [faceServiceOk, setFaceServiceOk] = useState<boolean | null>(null);
 
-  // Check face service health once on mount
+  // Check face service health periodically (every 15s if not ok, stop once ok)
   useEffect(() => {
-    apiFetch("/api/faces/status")
-      .then((r) => r.json())
-      .then((d) => setFaceServiceOk(d.service_available === true))
-      .catch(() => setFaceServiceOk(false));
-  }, []);
+    let cancelled = false;
+    const check = () => {
+      apiFetch("/api/faces/status")
+        .then((r) => r.json())
+        .then((d) => { if (!cancelled) setFaceServiceOk(d.service_available === true); })
+        .catch(() => { if (!cancelled) setFaceServiceOk(false); });
+    };
+    check();
+    const interval = setInterval(() => {
+      if (faceServiceOk !== true) check();
+    }, 15000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [faceServiceOk]);
 
   const streamUrl = `/api/recordings/${recording.id}/stream?token=${encodeURIComponent(token)}`;
 
@@ -852,14 +860,36 @@ function Playback() {
                             )}
                           </div>
                         </div>
-                        <button
-                          onClick={() => jumpToMoment(a.camera_id, a.first_seen || a.detected_at)}
-                          style={{ flexShrink: 0, padding: "0.15rem 0.35rem", borderRadius: "3px", border: "1px solid #1a1a2e",
-                            background: "#1a1a2e", color: "#fff", cursor: "pointer", fontSize: "0.6rem", fontWeight: 600 }}
-                          title="Ver este momento"
-                        >
-                          &#9654;
-                        </button>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem", flexShrink: 0 }}>
+                          <button
+                            onClick={() => jumpToMoment(a.camera_id, a.first_seen || a.detected_at)}
+                            style={{ padding: "0.15rem 0.35rem", borderRadius: "3px", border: "1px solid #1a1a2e",
+                              background: "#1a1a2e", color: "#fff", cursor: "pointer", fontSize: "0.6rem", fontWeight: 600 }}
+                            title="Ver este momento"
+                          >
+                            &#9654;
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const entryName = prompt("Nome para a lista de suspeitos:", "Suspeito");
+                              if (!entryName) return;
+                              try {
+                                const r = await apiFetch("/api/faces/watchlist/from-appearance", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ face_embedding_id: a.id, name: entryName }),
+                                });
+                                if (r.ok) { alert("Adicionado à lista de suspeitos!"); }
+                                else { const e = await r.json(); alert(e.error || "Erro ao adicionar"); }
+                              } catch { alert("Erro ao adicionar à lista de suspeitos"); }
+                            }}
+                            style={{ padding: "0.15rem 0.35rem", borderRadius: "3px", border: "1px solid #c62828",
+                              background: "#c62828", color: "#fff", cursor: "pointer", fontSize: "0.55rem", fontWeight: 600 }}
+                            title="Adicionar à lista de suspeitos"
+                          >
+                            &#9888;
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>

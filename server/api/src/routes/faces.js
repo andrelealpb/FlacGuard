@@ -212,6 +212,57 @@ router.post('/watchlist', authenticate, authorize('admin'), async (req, res) => 
   }
 });
 
+// POST /api/faces/watchlist/from-appearance — Add face to watchlist from a face_embeddings crop
+router.post('/watchlist/from-appearance', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { face_embedding_id, name, description, alert_type } = req.body;
+    if (!face_embedding_id) {
+      return res.status(400).json({ error: 'face_embedding_id is required' });
+    }
+
+    // Get the face embedding and crop path from DB
+    const { rows } = await pool.query(
+      'SELECT embedding, face_image, confidence FROM face_embeddings WHERE id = $1',
+      [face_embedding_id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Face embedding not found' });
+
+    const { embedding, face_image, confidence } = rows[0];
+    if (!face_image || !existsSync(face_image)) {
+      return res.status(400).json({ error: 'Crop image not found on disk' });
+    }
+
+    // Copy crop to watchlist directory
+    const photoBuffer = readFileSync(face_image);
+    const filename = `watchlist-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+    const photoPath = join(WATCHLIST_DIR, filename);
+    if (!existsSync(WATCHLIST_DIR)) mkdirSync(WATCHLIST_DIR, { recursive: true });
+    writeFileSync(photoPath, photoBuffer);
+
+    // Re-serialize embedding from pgvector format
+    const embeddingStr = typeof embedding === 'string' ? embedding : `[${embedding.join(',')}]`;
+    const userId = req.auth?.user?.id || null;
+    const entryName = name || `Suspeito ${new Date().toLocaleDateString('pt-BR')}`;
+
+    const { rows: inserted } = await pool.query(
+      `INSERT INTO face_watchlist (name, description, photo_path, embedding, alert_type, created_by)
+       VALUES ($1, $2, $3, $4::vector, $5, $6)
+       RETURNING id, name, description, alert_type, created_at`,
+      [entryName, description || null, photoPath, embeddingStr, alert_type || 'suspect', userId]
+    );
+
+    console.log(`[Face] Watchlist entry added from appearance: "${entryName}" (${alert_type || 'suspect'}) — confidence ${(confidence * 100).toFixed(1)}%`);
+
+    res.status(201).json({
+      ...inserted[0],
+      photo_url: `/api/faces/image?path=${encodeURIComponent(photoPath)}`,
+    });
+  } catch (err) {
+    console.error('[Faces] Watchlist from appearance error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PATCH /api/faces/watchlist/:id — Update watchlist entry
 router.patch('/watchlist/:id', authenticate, authorize('admin'), async (req, res) => {
   try {
