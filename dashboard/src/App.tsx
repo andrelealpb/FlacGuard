@@ -9,6 +9,7 @@ import Stats from "./pages/Stats";
 import Cameras from "./pages/Cameras";
 import FaceSearch from "./pages/FaceSearch";
 import Visitors from "./pages/Visitors";
+import Monitoring from "./pages/Monitoring";
 
 const navItems = [
   { to: "/", label: "Ao Vivo" },
@@ -17,6 +18,7 @@ const navItems = [
   { to: "/faces", label: "Facial" },
   { to: "/visitors", label: "Visitantes" },
   { to: "/pdvs", label: "PDVs" },
+  { to: "/monitor", label: "Monitor" },
   { to: "/settings", label: "Configurações" },
   { to: "/stats", label: "Stats" },
 ];
@@ -83,6 +85,7 @@ function App() {
           <Route path="/faces" element={<FaceSearch />} />
           <Route path="/visitors" element={<Visitors />} />
           <Route path="/pdvs" element={<PDVs />} />
+          <Route path="/monitor" element={<Monitoring />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/stats" element={<Stats />} />
         </Routes>
