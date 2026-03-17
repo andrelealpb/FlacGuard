@@ -47,8 +47,16 @@ interface CameraForm {
   motion_sensitivity: number;
 }
 
+interface DiskUsageEntry {
+  total_bytes: string;
+  recording_bytes: string;
+  recording_count: number;
+  face_bytes: string;
+  face_count: number;
+}
+
 interface DiskUsageMap {
-  [cameraId: string]: { total_bytes: string; recording_count: number };
+  [cameraId: string]: DiskUsageEntry;
 }
 
 const emptyForm: CameraForm = {
@@ -367,7 +375,13 @@ function Cameras() {
         setModels(modelList);
         const usageMap: DiskUsageMap = {};
         for (const u of usage) {
-          usageMap[u.camera_id] = { total_bytes: u.total_bytes, recording_count: u.recording_count };
+          usageMap[u.camera_id] = {
+            total_bytes: u.total_bytes,
+            recording_bytes: u.recording_bytes || "0",
+            recording_count: u.recording_count || 0,
+            face_bytes: u.face_bytes || "0",
+            face_count: u.face_count || 0,
+          };
         }
         setDiskUsage(usageMap);
       })
@@ -800,12 +814,17 @@ function Cameras() {
                       {cam.retention_days}d
                     </td>
                     <td style={{ padding: "0.6rem 1rem" }}>
-                      <div style={{ fontSize: "0.8rem", fontFamily: "monospace" }}>
+                      <div style={{ fontSize: "0.8rem", fontFamily: "monospace", fontWeight: 600 }}>
                         {totalBytes > 0 ? formatBytes(totalBytes) : "—"}
                       </div>
-                      {usage && usage.recording_count > 0 && (
+                      {usage && parseInt(usage.recording_bytes) > 0 && (
                         <div style={{ fontSize: "0.65rem", color: "#999" }}>
-                          {usage.recording_count} gravações
+                          {formatBytes(parseInt(usage.recording_bytes))} gravações ({usage.recording_count})
+                        </div>
+                      )}
+                      {usage && parseInt(usage.face_bytes) > 0 && (
+                        <div style={{ fontSize: "0.65rem", color: "#999" }}>
+                          {formatBytes(parseInt(usage.face_bytes))} faciais ({usage.face_count})
                         </div>
                       )}
                     </td>
