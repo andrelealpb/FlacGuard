@@ -290,7 +290,7 @@ router.get('/stream-names', authenticate, async (_req, res) => {
   }
 });
 
-// GET /api/cameras/disk-usage — Disk usage per camera
+// GET /api/cameras/disk-usage — Disk usage per camera (recordings + faces)
 router.get('/disk-usage', authenticate, async (_req, res) => {
   try {
     // Backfill any recordings missing file_size
@@ -313,15 +313,47 @@ router.get('/disk-usage', authenticate, async (_req, res) => {
       if (fixed > 0) console.log(`[DiskUsage] Backfilled file_size for ${fixed}/${missing.length} recordings`);
     }
 
-    const { rows } = await pool.query(
+    // Recording totals per camera
+    const { rows: recRows } = await pool.query(
       `SELECT c.id as camera_id, c.name, c.retention_days,
-              COALESCE(SUM(r.file_size), 0)::text as total_bytes,
+              COALESCE(SUM(r.file_size), 0)::text as recording_bytes,
               COUNT(r.id)::int as recording_count
        FROM cameras c
        LEFT JOIN recordings r ON r.camera_id = c.id
-       GROUP BY c.id, c.name, c.retention_days
-       ORDER BY total_bytes DESC`
+       GROUP BY c.id, c.name, c.retention_days`
     );
+
+    // Face image sizes per camera — scan face_image paths on disk
+    const { rows: faceRows } = await pool.query(
+      `SELECT camera_id, face_image FROM face_embeddings WHERE face_image IS NOT NULL`
+    );
+    const faceSizeMap = {};   // camera_id -> { bytes, count }
+    for (const f of faceRows) {
+      try {
+        if (f.face_image && existsSync(f.face_image)) {
+          const sz = statSync(f.face_image).size;
+          if (!faceSizeMap[f.camera_id]) faceSizeMap[f.camera_id] = { bytes: 0, count: 0 };
+          faceSizeMap[f.camera_id].bytes += sz;
+          faceSizeMap[f.camera_id].count++;
+        }
+      } catch { /* skip */ }
+    }
+
+    const rows = recRows.map(r => {
+      const face = faceSizeMap[r.camera_id] || { bytes: 0, count: 0 };
+      const recBytes = parseInt(r.recording_bytes) || 0;
+      return {
+        camera_id: r.camera_id,
+        name: r.name,
+        retention_days: r.retention_days,
+        total_bytes: String(recBytes + face.bytes),
+        recording_bytes: r.recording_bytes,
+        recording_count: r.recording_count,
+        face_bytes: String(face.bytes),
+        face_count: face.count,
+      };
+    });
+    rows.sort((a, b) => parseInt(b.total_bytes) - parseInt(a.total_bytes));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
