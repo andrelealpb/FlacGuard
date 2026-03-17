@@ -49,7 +49,7 @@ function runDeploy(info) {
   const startedAt = new Date().toISOString();
   console.log(`[${startedAt}] Starting deploy: ${info}`);
 
-  execFile('bash', [DEPLOY_SCRIPT], { timeout: 600000 }, (err, stdout, stderr) => {
+  execFile('bash', [DEPLOY_SCRIPT], { timeout: 1800000 }, (err, stdout, stderr) => {
     deploying = false;
     const finishedAt = new Date().toISOString();
     if (err) {
