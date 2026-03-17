@@ -1,13 +1,15 @@
-// HappyDo Guard — Auto-deploy webhook v2
+// HappyDo Guard — Auto-deploy webhook v3
 const http = require('http');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.WEBHOOK_PORT || 9000;
 const SECRET = process.env.WEBHOOK_SECRET || '';
-const DEPLOY_SCRIPT = path.join(__dirname, 'deploy.sh');
+const DEPLOY_SCRIPT = process.env.DEPLOY_SCRIPT || path.join(__dirname, 'deploy.sh');
 const BRANCH = process.env.DEPLOY_BRANCH || 'main';
+const LOG_FILE = process.env.DEPLOY_LOG || '/opt/HappyDoGuard/deploy.log';
 
 let deploying = false;
 
@@ -18,21 +20,27 @@ function verifySignature(payload, signature) {
   return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(signature || ''));
 }
 
+let lastDeployResult = null;
+
 function runDeploy(info) {
   if (deploying) {
     console.log(`[${new Date().toISOString()}] Deploy already in progress, skipping`);
     return;
   }
   deploying = true;
-  console.log(`[${new Date().toISOString()}] Starting deploy: ${info}`);
+  const startedAt = new Date().toISOString();
+  console.log(`[${startedAt}] Starting deploy: ${info}`);
 
-  execFile('bash', [DEPLOY_SCRIPT], { timeout: 300000 }, (err, stdout, stderr) => {
+  execFile('bash', [DEPLOY_SCRIPT], { timeout: 600000 }, (err, stdout, stderr) => {
     deploying = false;
+    const finishedAt = new Date().toISOString();
     if (err) {
-      console.error(`[${new Date().toISOString()}] Deploy FAILED:`, err.message);
-      console.error(stderr);
+      console.error(`[${finishedAt}] Deploy FAILED:`, err.message);
+      if (stderr) console.error(stderr);
+      lastDeployResult = { status: 'failed', info, startedAt, finishedAt, error: err.message };
     } else {
-      console.log(`[${new Date().toISOString()}] Deploy SUCCESS`);
+      console.log(`[${finishedAt}] Deploy SUCCESS`);
+      lastDeployResult = { status: 'success', info, startedAt, finishedAt };
     }
     if (stdout) console.log(stdout);
   });
@@ -41,7 +49,33 @@ function runDeploy(info) {
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'deploy-webhook', deploying }));
+    res.end(JSON.stringify({ status: 'ok', service: 'deploy-webhook', deploying, branch: BRANCH }));
+    return;
+  }
+
+  // Status endpoint — shows last deploy result + deploy-status.json
+  if (req.method === 'GET' && req.url === '/status') {
+    let statusFile = null;
+    try {
+      const statusPath = path.join(path.dirname(DEPLOY_SCRIPT), '..', 'deploy-status.json');
+      statusFile = JSON.parse(fs.readFileSync(statusPath, 'utf-8'));
+    } catch { /* no status file */ }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ deploying, branch: BRANCH, lastDeployResult, statusFile }, null, 2));
+    return;
+  }
+
+  // Logs endpoint — shows last 100 lines of deploy.log
+  if (req.method === 'GET' && req.url === '/logs') {
+    try {
+      const content = fs.readFileSync(LOG_FILE, 'utf-8');
+      const lines = content.split('\n').slice(-100).join('\n');
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end(lines);
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('No deploy log found: ' + e.message);
+    }
     return;
   }
 

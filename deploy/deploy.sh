@@ -1,10 +1,33 @@
 #!/bin/bash
-set -e
 
 DEPLOY_DIR="/opt/HappyDoGuard"
 STATUS_FILE="$DEPLOY_DIR/deploy-status.json"
+LOG_FILE="$DEPLOY_DIR/deploy.log"
 LOG_PREFIX="[deploy]"
 STARTED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+# Redirect all output to log file AND stdout
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+# Trap errors so status never stays stuck on "deploying"
+cleanup_on_error() {
+  local exit_code=$?
+  if [ $exit_code -ne 0 ]; then
+    FAILED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    echo "$LOG_PREFIX FAILED at $FAILED_AT (exit code: $exit_code)"
+    cat > "$STATUS_FILE" <<FAILEOF
+{
+  "status": "failed",
+  "started_at": "$STARTED_AT",
+  "finished_at": "$FAILED_AT",
+  "message": "Deploy falhou (exit code: $exit_code). Veja deploy.log para detalhes."
+}
+FAILEOF
+  fi
+}
+trap cleanup_on_error EXIT
+
+set -e
 
 echo "$LOG_PREFIX $STARTED_AT Starting deploy..."
 
@@ -148,5 +171,8 @@ STATUSEOF
 
 # Cleanup old images
 docker image prune -f 2>/dev/null || true
+
+# Disable error trap since deploy completed successfully
+trap - EXIT
 
 echo "$LOG_PREFIX $FINISHED_AT Deploy complete! Status: $DEPLOY_STATUS"

@@ -306,19 +306,33 @@ function Settings() {
                         background:
                           deploy.status === "success" || deploy.status === "ok" ? "#e8f5e9"
                           : deploy.status === "deploying" ? "#fff3e0"
+                          : deploy.status === "failed" ? "#ffebee"
                           : deploy.status === "degraded" ? "#ffebee"
                           : "#f5f5f5",
                         color:
                           deploy.status === "success" || deploy.status === "ok" ? "#2e7d32"
                           : deploy.status === "deploying" ? "#e65100"
+                          : deploy.status === "failed" ? "#c62828"
                           : deploy.status === "degraded" ? "#c62828"
                           : "#666",
                       }}
                     >
-                      {deploy.status === "success" || deploy.status === "ok" ? "OK" : deploy.status === "deploying" ? "Deployando..." : deploy.status === "degraded" ? "Degradado" : deploy.status}
+                      {deploy.status === "success" || deploy.status === "ok" ? "OK"
+                        : deploy.status === "deploying" ? "Deployando..."
+                        : deploy.status === "failed" ? "Falhou"
+                        : deploy.status === "degraded" ? "Degradado"
+                        : deploy.status}
                     </span>
                   </td>
                 </tr>
+                {deploy.message && (
+                  <tr>
+                    <td style={{ padding: "0.4rem 0", fontWeight: 600 }}>Mensagem</td>
+                    <td style={{ color: deploy.status === "failed" ? "#c62828" : "#666", fontSize: "0.85rem" }}>
+                      {deploy.message}
+                    </td>
+                  </tr>
+                )}
                 {deploy.commit && (
                   <tr>
                     <td style={{ padding: "0.4rem 0", fontWeight: 600 }}>Commit</td>

@@ -18,6 +18,11 @@ fi
 # Make deploy script executable
 chmod +x "$DEPLOY_DIR/deploy/deploy.sh"
 
+# Ensure deploy-status.json exists (avoid stuck "deploying" on first run)
+if [ ! -f "$DEPLOY_DIR/deploy-status.json" ]; then
+  echo '{"status":"unknown","message":"Nenhum deploy registrado ainda"}' > "$DEPLOY_DIR/deploy-status.json"
+fi
+
 # Install systemd service
 cp "$DEPLOY_DIR/deploy/happydo-webhook.service" /etc/systemd/system/
 systemctl daemon-reload
@@ -33,11 +38,16 @@ echo "=== Setup Complete ==="
 echo ""
 echo "Webhook running on port 9000"
 echo ""
-echo "Now configure GitHub webhook:"
+echo "Configure GitHub webhook:"
 echo "  1. Go to: https://github.com/andrelealpb/HappyDoGuard/settings/hooks/new"
-echo "  2. Payload URL: http://147.93.7.251:9000/webhook"
+echo "  2. Payload URL: http://YOUR_SERVER_IP:9000/webhook"
 echo "  3. Content type: application/json"
 echo "  4. Secret: (the secret shown above, or check .env)"
 echo "  5. Events: Just the push event"
 echo ""
-echo "Test with: curl -X POST http://localhost:9000/deploy"
+echo "=== Diagnósticos ==="
+echo "  Testar deploy manual: curl -X POST http://localhost:9000/deploy"
+echo "  Ver status:           curl http://localhost:9000/status"
+echo "  Ver logs:             curl http://localhost:9000/logs"
+echo "  Logs do systemd:      journalctl -u happydo-webhook -f"
+echo ""
