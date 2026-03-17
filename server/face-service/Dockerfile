@@ -5,8 +5,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Limit compilation parallelism to avoid OOM during insightface Cython build
+ENV MAKEFLAGS="-j1" MAX_JOBS=1
+
+# Install insightface first (slow Cython compilation) as separate layer for caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir cython numpy==1.26.4 \
+  && pip install --no-cache-dir --no-build-isolation insightface==0.7.3 \
+  && pip install --no-cache-dir -r requirements.txt
 
 # Remove build tools to reduce image size
 RUN apt-get purge -y --auto-remove build-essential \
