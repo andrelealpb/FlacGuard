@@ -1,7 +1,7 @@
 // HappyDo Guard — Auto-deploy webhook v3
 const http = require('http');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
+const { execFile, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -18,6 +18,24 @@ function verifySignature(payload, signature) {
   const hmac = crypto.createHmac('sha256', SECRET);
   const digest = 'sha256=' + hmac.update(payload).digest('hex');
   return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(signature || ''));
+}
+
+function checkBearerAuth(req) {
+  if (!SECRET) return true;
+  const auth = req.headers['authorization'];
+  return auth === `Bearer ${SECRET}`;
+}
+
+// Read last N lines of a file efficiently using tail
+function readTail(filePath, lines) {
+  try {
+    return execSync(`tail -n ${lines} ${JSON.stringify(filePath)}`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+  } catch (e) {
+    return 'No deploy log found: ' + e.message;
+  }
 }
 
 let lastDeployResult = null;
@@ -47,14 +65,20 @@ function runDeploy(info) {
 }
 
 const server = http.createServer((req, res) => {
+  // Health check — always public (used by monitoring)
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', service: 'deploy-webhook', deploying, branch: BRANCH }));
     return;
   }
 
-  // Status endpoint — shows last deploy result + deploy-status.json
+  // Status endpoint — requires auth (exposes deploy metadata)
   if (req.method === 'GET' && req.url === '/status') {
+    if (!checkBearerAuth(req)) {
+      res.writeHead(401);
+      res.end('Unauthorized');
+      return;
+    }
     let statusFile = null;
     try {
       const statusPath = path.join(path.dirname(DEPLOY_SCRIPT), '..', 'deploy-status.json');
@@ -65,17 +89,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Logs endpoint — shows last 100 lines of deploy.log
+  // Logs endpoint — requires auth (exposes operational details); reads only tail
   if (req.method === 'GET' && req.url === '/logs') {
-    try {
-      const content = fs.readFileSync(LOG_FILE, 'utf-8');
-      const lines = content.split('\n').slice(-100).join('\n');
-      res.writeHead(200, { 'Content-Type': 'text/plain' });
-      res.end(lines);
-    } catch (e) {
-      res.writeHead(200, { 'Content-Type': 'text/plain' });
-      res.end('No deploy log found: ' + e.message);
+    if (!checkBearerAuth(req)) {
+      res.writeHead(401);
+      res.end('Unauthorized');
+      return;
     }
+    const content = readTail(LOG_FILE, 100);
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end(content);
     return;
   }
 
@@ -120,8 +143,7 @@ const server = http.createServer((req, res) => {
 
   // Manual deploy trigger
   if (req.method === 'POST' && req.url === '/deploy') {
-    const auth = req.headers['authorization'];
-    if (SECRET && auth !== `Bearer ${SECRET}`) {
+    if (!checkBearerAuth(req)) {
       res.writeHead(401);
       res.end('Unauthorized');
       return;
