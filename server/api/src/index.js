@@ -15,6 +15,7 @@ import authRouter from './routes/auth.js';
 import hooksRouter from './routes/hooks.js';
 import settingsRouter from './routes/settings.js';
 import facesRouter from './routes/faces.js';
+import monitorRouter from './routes/monitor.js';
 import { pool } from './db/pool.js';
 import { startMotionDetector } from './services/motion-detector.js';
 import { manageContinuousRecordings } from './services/recorder.js';
@@ -46,6 +47,7 @@ app.use('/api/webhooks', webhooksRouter);
 app.use('/api/pdvs', pdvsRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/faces', facesRouter);
+app.use('/api/monitor', monitorRouter);
 
 // Nginx-RTMP callback hooks (internal, no /api prefix)
 app.use('/hooks', hooksRouter);

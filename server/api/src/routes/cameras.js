@@ -293,9 +293,9 @@ router.get('/stream-names', authenticate, async (_req, res) => {
 // GET /api/cameras/disk-usage — Disk usage per camera
 router.get('/disk-usage', authenticate, async (_req, res) => {
   try {
-    // Backfill any recordings missing file_size (from nginx-rtmp hooks before fix)
+    // Backfill any recordings missing file_size
     const { rows: missing } = await pool.query(
-      'SELECT id, file_path FROM recordings WHERE file_size IS NULL'
+      'SELECT id, file_path FROM recordings WHERE file_size IS NULL OR file_size = 0'
     );
     if (missing.length > 0) {
       let fixed = 0;
@@ -303,8 +303,10 @@ router.get('/disk-usage', authenticate, async (_req, res) => {
         try {
           if (rec.file_path && existsSync(rec.file_path)) {
             const size = statSync(rec.file_path).size;
-            await pool.query('UPDATE recordings SET file_size = $1 WHERE id = $2', [size, rec.id]);
-            fixed++;
+            if (size > 0) {
+              await pool.query('UPDATE recordings SET file_size = $1 WHERE id = $2', [size, rec.id]);
+              fixed++;
+            }
           }
         } catch { /* skip */ }
       }
@@ -313,7 +315,7 @@ router.get('/disk-usage', authenticate, async (_req, res) => {
 
     const { rows } = await pool.query(
       `SELECT c.id as camera_id, c.name, c.retention_days,
-              COALESCE(SUM(r.file_size), 0)::bigint as total_bytes,
+              COALESCE(SUM(r.file_size), 0)::text as total_bytes,
               COUNT(r.id)::int as recording_count
        FROM cameras c
        LEFT JOIN recordings r ON r.camera_id = c.id
