@@ -16,10 +16,13 @@ import hooksRouter from './routes/hooks.js';
 import settingsRouter from './routes/settings.js';
 import facesRouter from './routes/faces.js';
 import monitorRouter from './routes/monitor.js';
+import alertsRouter from './routes/alerts.js';
 import { pool } from './db/pool.js';
 import { startMotionDetector } from './services/motion-detector.js';
 import { manageContinuousRecordings } from './services/recorder.js';
 import { countDistinctVisitors } from './services/face-recognition.js';
+import { cleanupAllCameras } from './services/cleanup.js';
+import { runDiskMonitor } from './services/disk-monitor.js';
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -48,6 +51,7 @@ app.use('/api/pdvs', pdvsRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/faces', facesRouter);
 app.use('/api/monitor', monitorRouter);
+app.use('/api/alerts', alertsRouter);
 
 // Nginx-RTMP callback hooks (internal, no /api prefix)
 app.use('/hooks', hooksRouter);
@@ -164,6 +168,24 @@ runMigrations()
         }
         setInterval(computeAllVisitors, 10 * 60 * 1000); // Every 10 minutes
         setTimeout(computeAllVisitors, 30000); // First run after 30s
+
+        // Automatic cleanup: delete recordings older than retention_days (every hour)
+        async function scheduledCleanup() {
+          try {
+            const result = await cleanupAllCameras();
+            if (result.deleted > 0) {
+              console.log(`[Scheduler] Cleanup: ${result.deleted} recordings deleted, ${(result.freed / 1024 / 1024).toFixed(1)} MB freed`);
+            }
+          } catch (err) {
+            console.error('[Scheduler] Cleanup error:', err.message);
+          }
+        }
+        setInterval(scheduledCleanup, 60 * 60 * 1000); // Every 1 hour
+        setTimeout(scheduledCleanup, 60000); // First run after 1 min
+
+        // Disk monitoring: check usage and create alerts at 85%/90% (every 15 min)
+        setInterval(runDiskMonitor, 15 * 60 * 1000); // Every 15 minutes
+        setTimeout(runDiskMonitor, 45000); // First run after 45s
       }, 10000);
     });
   })
