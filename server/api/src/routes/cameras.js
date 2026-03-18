@@ -192,6 +192,9 @@ router.post('/', authenticate, async (req, res) => {
     if (motion_sensitivity !== undefined && (motion_sensitivity < 1 || motion_sensitivity > 100)) {
       return res.status(400).json({ error: 'motion_sensitivity must be between 1 and 100' });
     }
+    if (storage_quota_gb !== undefined && storage_quota_gb !== null && (storage_quota_gb < 0.1 || storage_quota_gb > 1000)) {
+      return res.status(400).json({ error: 'storage_quota_gb must be between 0.1 and 1000' });
+    }
 
     // Verify PDV exists
     const pdvCheck = await pool.query('SELECT id FROM pdvs WHERE id = $1', [pdv_id]);
@@ -208,7 +211,7 @@ router.post('/', authenticate, async (req, res) => {
        RETURNING *`,
       [name, streamKey, model, camera_group, location_description, pdv_id,
        recording_mode || 'continuous', retention_days || 21, motion_sensitivity || 5,
-       storage_quota_gb || null]
+       storage_quota_gb != null ? storage_quota_gb : null]
     );
     const camera = rows[0];
     res.status(201).json({

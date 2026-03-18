@@ -369,8 +369,13 @@ function AlertsBox({ apiFetch }: { apiFetch: (url: string, opts?: RequestInit) =
 
   const loadAlerts = () => {
     apiFetch("/api/alerts?resolved=false&limit=20")
-      .then((r) => r.json())
-      .then(setAlerts)
+      .then((r) => {
+        if (!r.ok) return;
+        return r.json();
+      })
+      .then((data) => {
+        if (Array.isArray(data)) setAlerts(data);
+      })
       .catch(() => {});
   };
 
