@@ -1,6 +1,6 @@
 # Setup do VPS
 
-Guia para provisionar e configurar o servidor cloud para o HappyDo Guard.
+Guia para provisionar e configurar o servidor cloud para o Flac Guard.
 
 ## Provedor recomendado: Contabo
 
@@ -26,8 +26,8 @@ sudo usermod -aG docker $USER
 sudo apt install -y docker-compose-plugin
 
 # 4. Clonar repositório
-git clone https://github.com/andrelealpb/HappyDoGuard.git /opt/HappyDoGuard
-cd /opt/HappyDoGuard
+git clone https://github.com/andrelealpb/FlacGuard.git /opt/FlacGuard
+cd /opt/FlacGuard
 
 # 5. Configurar variáveis de ambiente
 cp .env.example .env
@@ -53,7 +53,7 @@ sudo ufw enable
 
 ```bash
 sudo apt install -y certbot
-sudo certbot certonly --standalone -d guard.happydo.com.br
+sudo certbot certonly --standalone -d guard.flac.com.br
 ```
 
 Configure o Nginx do dashboard para usar o certificado gerado.

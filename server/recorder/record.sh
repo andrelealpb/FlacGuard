@@ -1,5 +1,5 @@
 #!/bin/bash
-# HappyDo Guard — Recording script
+# Flac Guard — Recording script
 # Converts RTMP live streams to MP4 segments for archival.
 # Used as an alternative/complement to Nginx-RTMP native recording.
 #

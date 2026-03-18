@@ -1,4 +1,4 @@
-# HappyDo Guard — Arquitetura do Sistema
+# Flac Guard — Arquitetura do Sistema
 
 > Versão 2.8 | Março 2026 | **Fase 1 Concluída**
 
@@ -93,7 +93,7 @@ SERVIDOR CLOUD:
 
 ---
 
-## 4. HappyDo Guard Cam (App Android)
+## 4. Flac Guard Cam (App Android)
 
 ### 4.1 Visão Geral
 
@@ -151,7 +151,7 @@ O app é desenvolvido no Claude Code e compilado na cloud via GitHub Actions. Se
 | Método | Detalhe |
 |--------|---------|
 | ADB via rede | `adb connect IP:5555` + `adb install` (mesmo Wi-Fi) |
-| Download HTTP | App busca atualização em `guard.happydo.com.br/apk/latest` |
+| Download HTTP | App busca atualização em `guard.flac.com.br/apk/latest` |
 | Pendrive/SD | Copiar APK, instalar local |
 
 Sem Google Play. Distribuição interna (sideload). PIPO, Sunmi e Lenovo permitem instalação de fontes externas.
@@ -160,7 +160,7 @@ Sem Google Play. Distribuição interna (sideload). PIPO, Sunmi e Lenovo permite
 
 ```json
 {
-  "server": "guard.happydo.com.br",
+  "server": "guard.flac.com.br",
   "port": 1935,
   "stream_key": "pdv_dct_loja_facecam",
   "camera_source": "auto",
@@ -274,7 +274,7 @@ Auth: API Key (server-to-server), JWT (dashboard), device token (Guard Cam).
 | Função | Ferramenta |
 |--------|-----------|
 | IDE | Claude Code (SSH no VPS) |
-| Repositório | GitHub (`happydo-guard`) |
+| Repositório | GitHub (`flac-guard`) |
 | CI/CD Server | GitHub Actions → deploy VPS |
 | **CI/CD Android** | **GitHub Actions → build APK (JDK 17 + Android SDK)** |
 | Banco | PostgreSQL + pgvector no VPS |
@@ -360,7 +360,7 @@ Claude Code → escreve Kotlin → push guard-cam/*
 ## 11. Estrutura do Repositório
 
 ```
-happydo-guard/
+flac-guard/
 ├── ARCHITECTURE.md
 ├── docker-compose.yml
 ├── .github/workflows/
@@ -402,7 +402,7 @@ happydo-guard/
 │       ├── build.gradle.kts
 │       └── src/main/
 │           ├── AndroidManifest.xml
-│           └── java/com/happydo/guardcam/
+│           └── java/com/flac/guardcam/
 │               ├── GuardCamApp.kt
 │               ├── service/
 │               │   ├── StreamService.kt

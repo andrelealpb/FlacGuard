@@ -8,7 +8,7 @@ Documentação de integração para aplicações externas que consomem a API do 
 
 | Ambiente       | URL                                                  |
 |----------------|------------------------------------------------------|
-| **Produção**   | `https://happydopulse-production.up.railway.app/api` |
+| **Produção**   | `https://flacpulse-production.up.railway.app/api` |
 | **Desenvolvimento** | `http://localhost:3001/api`                     |
 
 Todas as requisições devem usar HTTPS em produção.
@@ -132,7 +132,7 @@ GET /api/stores
 ### 3.2 Exemplo de requisição
 
 ```bash
-curl -X GET "https://happydopulse-production.up.railway.app/api/stores?page=1&limit=10&active=true&estado=PB" \
+curl -X GET "https://flacpulse-production.up.railway.app/api/stores?page=1&limit=10&active=true&estado=PB" \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..."
 ```
 
@@ -269,7 +269,7 @@ Quando o limite é atingido, a API retorna status `429 Too Many Requests`.
 ```javascript
 // 1. Autenticar e obter token
 const loginResponse = await fetch(
-  'https://happydopulse-production.up.railway.app/api/auth/login',
+  'https://flacpulse-production.up.railway.app/api/auth/login',
   {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -285,7 +285,7 @@ const token = authData.accessToken;
 
 // 2. Listar lojas ativas
 const storesResponse = await fetch(
-  'https://happydopulse-production.up.railway.app/api/stores?active=true&limit=50',
+  'https://flacpulse-production.up.railway.app/api/stores?active=true&limit=50',
   {
     headers: { Authorization: `Bearer ${token}` },
   }
@@ -297,7 +297,7 @@ console.log('Lojas:', data.stores);
 
 // 3. Buscar loja específica por código
 const storeResponse = await fetch(
-  'https://happydopulse-production.up.railway.app/api/stores/code/0001',
+  'https://flacpulse-production.up.railway.app/api/stores/code/0001',
   {
     headers: { Authorization: `Bearer ${token}` },
   }

@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-echo "=== HappyDo Guard - Deploy Webhook Setup ==="
+echo "=== Flac Guard - Deploy Webhook Setup ==="
 
-DEPLOY_DIR="/opt/HappyDoGuard"
+DEPLOY_DIR="/opt/FlacGuard"
 
 # Generate webhook secret if not set
 if ! grep -q WEBHOOK_SECRET "$DEPLOY_DIR/.env" 2>/dev/null; then
@@ -24,14 +24,14 @@ if [ ! -f "$DEPLOY_DIR/deploy-status.json" ]; then
 fi
 
 # Install systemd service
-cp "$DEPLOY_DIR/deploy/happydo-webhook.service" /etc/systemd/system/
+cp "$DEPLOY_DIR/deploy/flac-webhook.service" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable happydo-webhook
-systemctl restart happydo-webhook
+systemctl enable flac-webhook
+systemctl restart flac-webhook
 
 echo ""
 echo "=== Webhook Status ==="
-systemctl status happydo-webhook --no-pager -l
+systemctl status flac-webhook --no-pager -l
 
 echo ""
 echo "=== Setup Complete ==="
@@ -39,7 +39,7 @@ echo ""
 echo "Webhook running on port 9000"
 echo ""
 echo "Configure GitHub webhook:"
-echo "  1. Go to: https://github.com/andrelealpb/HappyDoGuard/settings/hooks/new"
+echo "  1. Go to: https://github.com/andrelealpb/FlacGuard/settings/hooks/new"
 echo "  2. Payload URL: http://YOUR_SERVER_IP:9000/webhook"
 echo "  3. Content type: application/json"
 echo "  4. Secret: (the secret shown above, or check .env)"
@@ -49,5 +49,5 @@ echo "=== Diagnósticos ==="
 echo "  Testar deploy manual: curl -X POST http://localhost:9000/deploy"
 echo "  Ver status:           curl http://localhost:9000/status"
 echo "  Ver logs:             curl http://localhost:9000/logs"
-echo "  Logs do systemd:      journalctl -u happydo-webhook -f"
+echo "  Logs do systemd:      journalctl -u flac-webhook -f"
 echo ""

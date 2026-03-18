@@ -1,5 +1,5 @@
 """
-HappyDo Guard — Face Detection & Embedding Service
+Flac Guard — Face Detection & Embedding Service
 Uses InsightFace (RetinaFace + ArcFace) to detect faces and generate 512D embeddings.
 Runs as a lightweight HTTP service consumed by the Node.js API.
 
@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down face service")
 
 
-app = FastAPI(title="HappyDo Guard Face Service", lifespan=lifespan)
+app = FastAPI(title="Flac Guard Face Service", lifespan=lifespan)
 
 
 def _extract_face_result(face, img):

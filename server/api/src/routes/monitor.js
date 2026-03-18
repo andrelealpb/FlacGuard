@@ -155,7 +155,7 @@ router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
     let services = [];
     try {
       const dockerPs = execSync(
-        "docker ps --format '{{.Names}}\\t{{.Status}}\\t{{.Ports}}' 2>/dev/null | grep -i happydo || true",
+        "docker ps --format '{{.Names}}\\t{{.Status}}\\t{{.Ports}}' 2>/dev/null | grep -i flac || true",
         { encoding: 'utf8', timeout: 5000 }
       );
       services = dockerPs.trim().split('\n').filter(Boolean).map(line => {
