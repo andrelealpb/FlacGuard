@@ -1,3 +1,5 @@
+name: flac-guard
+
 services:
   nginx-rtmp:
     build: ./server/nginx-rtmp
