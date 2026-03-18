@@ -70,6 +70,97 @@ router.get('/models', authenticate, (_req, res) => {
   })));
 });
 
+// GET /api/cameras/stream-names — Map stream keys to camera names (for RTMP stats)
+router.get('/stream-names', authenticate, async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT stream_key, c.name, c.id as camera_id, p.name as pdv_name
+       FROM cameras c LEFT JOIN pdvs p ON c.pdv_id = p.id`
+    );
+    const map = {};
+    for (const row of rows) {
+      map[row.stream_key] = {
+        name: row.name,
+        pdv_name: row.pdv_name,
+        camera_id: row.camera_id,
+      };
+    }
+    res.json(map);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/cameras/disk-usage — Disk usage per camera (recordings + faces)
+router.get('/disk-usage', authenticate, async (_req, res) => {
+  try {
+    // Backfill any recordings missing file_size
+    const { rows: missing } = await pool.query(
+      'SELECT id, file_path FROM recordings WHERE file_size IS NULL OR file_size = 0'
+    );
+    if (missing.length > 0) {
+      let fixed = 0;
+      for (const rec of missing) {
+        try {
+          if (rec.file_path && existsSync(rec.file_path)) {
+            const size = statSync(rec.file_path).size;
+            if (size > 0) {
+              await pool.query('UPDATE recordings SET file_size = $1 WHERE id = $2', [size, rec.id]);
+              fixed++;
+            }
+          }
+        } catch { /* skip */ }
+      }
+      if (fixed > 0) console.log(`[DiskUsage] Backfilled file_size for ${fixed}/${missing.length} recordings`);
+    }
+
+    // Recording totals per camera
+    const { rows: recRows } = await pool.query(
+      `SELECT c.id as camera_id, c.name, c.retention_days,
+              COALESCE(SUM(r.file_size), 0)::text as recording_bytes,
+              COUNT(r.id)::int as recording_count
+       FROM cameras c
+       LEFT JOIN recordings r ON r.camera_id = c.id
+       GROUP BY c.id, c.name, c.retention_days`
+    );
+
+    // Face image sizes per camera — scan face_image paths on disk
+    const { rows: faceRows } = await pool.query(
+      `SELECT camera_id, face_image FROM face_embeddings WHERE face_image IS NOT NULL`
+    );
+    const faceSizeMap = {};   // camera_id -> { bytes, count }
+    for (const f of faceRows) {
+      try {
+        if (f.face_image && existsSync(f.face_image)) {
+          const sz = statSync(f.face_image).size;
+          if (!faceSizeMap[f.camera_id]) faceSizeMap[f.camera_id] = { bytes: 0, count: 0 };
+          faceSizeMap[f.camera_id].bytes += sz;
+          faceSizeMap[f.camera_id].count++;
+        }
+      } catch { /* skip */ }
+    }
+
+    const rows = recRows.map(r => {
+      const face = faceSizeMap[r.camera_id] || { bytes: 0, count: 0 };
+      const recBytes = parseInt(r.recording_bytes) || 0;
+      return {
+        camera_id: r.camera_id,
+        name: r.name,
+        retention_days: r.retention_days,
+        total_bytes: String(recBytes + face.bytes),
+        recording_bytes: r.recording_bytes,
+        recording_count: r.recording_count,
+        face_bytes: String(face.bytes),
+        face_count: face.count,
+      };
+    });
+    rows.sort((a, b) => parseInt(b.total_bytes) - parseInt(a.total_bytes));
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/cameras — Register new camera
 router.post('/', authenticate, async (req, res) => {
   try {
@@ -264,97 +355,6 @@ router.get('/:id/recording', authenticate, async (req, res) => {
     );
     if (!recording) return res.status(404).json({ error: 'No recording found for this timestamp' });
     res.json(recording);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/cameras/stream-names — Map stream keys to camera names (for RTMP stats)
-router.get('/stream-names', authenticate, async (_req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `SELECT stream_key, c.name, c.id as camera_id, p.name as pdv_name
-       FROM cameras c LEFT JOIN pdvs p ON c.pdv_id = p.id`
-    );
-    const map = {};
-    for (const row of rows) {
-      map[row.stream_key] = {
-        name: row.name,
-        pdv_name: row.pdv_name,
-        camera_id: row.camera_id,
-      };
-    }
-    res.json(map);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/cameras/disk-usage — Disk usage per camera (recordings + faces)
-router.get('/disk-usage', authenticate, async (_req, res) => {
-  try {
-    // Backfill any recordings missing file_size
-    const { rows: missing } = await pool.query(
-      'SELECT id, file_path FROM recordings WHERE file_size IS NULL OR file_size = 0'
-    );
-    if (missing.length > 0) {
-      let fixed = 0;
-      for (const rec of missing) {
-        try {
-          if (rec.file_path && existsSync(rec.file_path)) {
-            const size = statSync(rec.file_path).size;
-            if (size > 0) {
-              await pool.query('UPDATE recordings SET file_size = $1 WHERE id = $2', [size, rec.id]);
-              fixed++;
-            }
-          }
-        } catch { /* skip */ }
-      }
-      if (fixed > 0) console.log(`[DiskUsage] Backfilled file_size for ${fixed}/${missing.length} recordings`);
-    }
-
-    // Recording totals per camera
-    const { rows: recRows } = await pool.query(
-      `SELECT c.id as camera_id, c.name, c.retention_days,
-              COALESCE(SUM(r.file_size), 0)::text as recording_bytes,
-              COUNT(r.id)::int as recording_count
-       FROM cameras c
-       LEFT JOIN recordings r ON r.camera_id = c.id
-       GROUP BY c.id, c.name, c.retention_days`
-    );
-
-    // Face image sizes per camera — scan face_image paths on disk
-    const { rows: faceRows } = await pool.query(
-      `SELECT camera_id, face_image FROM face_embeddings WHERE face_image IS NOT NULL`
-    );
-    const faceSizeMap = {};   // camera_id -> { bytes, count }
-    for (const f of faceRows) {
-      try {
-        if (f.face_image && existsSync(f.face_image)) {
-          const sz = statSync(f.face_image).size;
-          if (!faceSizeMap[f.camera_id]) faceSizeMap[f.camera_id] = { bytes: 0, count: 0 };
-          faceSizeMap[f.camera_id].bytes += sz;
-          faceSizeMap[f.camera_id].count++;
-        }
-      } catch { /* skip */ }
-    }
-
-    const rows = recRows.map(r => {
-      const face = faceSizeMap[r.camera_id] || { bytes: 0, count: 0 };
-      const recBytes = parseInt(r.recording_bytes) || 0;
-      return {
-        camera_id: r.camera_id,
-        name: r.name,
-        retention_days: r.retention_days,
-        total_bytes: String(recBytes + face.bytes),
-        recording_bytes: r.recording_bytes,
-        recording_count: r.recording_count,
-        face_bytes: String(face.bytes),
-        face_count: face.count,
-      };
-    });
-    rows.sort((a, b) => parseInt(b.total_bytes) - parseInt(a.total_bytes));
-    res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
