@@ -5,7 +5,7 @@
 <xsl:template match="/">
 <html>
 <head>
-  <title>RTMP Stats — HappyDo Guard</title>
+  <title>RTMP Stats — Flac Guard</title>
   <meta http-equiv="refresh" content="5"/>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -29,7 +29,7 @@
   </style>
 </head>
 <body>
-  <h1>HappyDo Guard — RTMP Stats</h1>
+  <h1>Flac Guard — RTMP Stats</h1>
   <p class="subtitle">
     Nginx <xsl:value-of select="rtmp/nginx_version"/> |
     RTMP Module <xsl:value-of select="rtmp/nginx_rtmp_version"/> |

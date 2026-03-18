@@ -1,4 +1,4 @@
--- HappyDo Guard — Database Schema
+-- Flac Guard — Database Schema
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 

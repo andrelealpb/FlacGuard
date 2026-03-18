@@ -1,4 +1,4 @@
-# HappyDo Guard — Agent (Pi Zero 2 W)
+# Flac Guard — Agent (Pi Zero 2 W)
 
 Agent para câmeras **IC3/IC5 legadas** (~23 câmeras) que não possuem RTMP nativo.
 
@@ -16,22 +16,22 @@ enviando o stream para o servidor cloud.
 
 ```bash
 # No Pi Zero, via SSH
-curl -sSL https://raw.githubusercontent.com/andrelealpb/HappyDoGuard/main/agent/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/andrelealpb/FlacGuard/main/agent/install.sh | bash
 ```
 
 Ou manualmente:
 
 ```bash
 sudo apt update && sudo apt install -y ffmpeg
-sudo cp happydo-agent.service /etc/systemd/system/
+sudo cp flac-guard-agent.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable happydo-agent
-sudo systemctl start happydo-agent
+sudo systemctl enable flac-guard-agent
+sudo systemctl start flac-guard-agent
 ```
 
 ## Configuração
 
-Edite `/etc/happydo-agent.conf`:
+Edite `/etc/flac-guard-agent.conf`:
 
 ```
 CAMERA_IP=192.168.1.100
@@ -46,8 +46,8 @@ STREAM_KEY=sua_stream_key_aqui
 
 ```bash
 # Status do serviço
-sudo systemctl status happydo-agent
+sudo systemctl status flac-guard-agent
 
 # Logs em tempo real
-journalctl -u happydo-agent -f
+journalctl -u flac-guard-agent -f
 ```

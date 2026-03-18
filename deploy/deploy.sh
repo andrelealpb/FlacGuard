@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DEPLOY_DIR="/opt/HappyDoGuard"
+DEPLOY_DIR="/opt/FlacGuard"
 STATUS_FILE="$DEPLOY_DIR/deploy-status.json"
 LOG_FILE="$DEPLOY_DIR/deploy.log"
 LOG_PREFIX="[deploy]"

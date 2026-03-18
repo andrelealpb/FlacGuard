@@ -503,7 +503,7 @@ function Settings() {
                   type="text"
                   value={serverForm.rtmp_public_host}
                   onChange={(e) => setServerForm({ ...serverForm, rtmp_public_host: e.target.value })}
-                  placeholder="Ex: 147.93.7.251 ou guard.happydo.com.br"
+                  placeholder="Ex: 147.93.7.251 ou guard.flacguard.com.br"
                   required
                   style={inputStyle}
                 />

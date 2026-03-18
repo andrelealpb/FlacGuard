@@ -1,4 +1,4 @@
-# HappyDo Guard
+# Flac Guard
 
 Sistema centralizado de vídeo monitoramento para ~80 câmeras MIBO Intelbras em mercadinhos autônomos da Happydo Mercadinhos (João Pessoa/PB).
 
@@ -34,8 +34,8 @@ Sistema centralizado de vídeo monitoramento para ~80 câmeras MIBO Intelbras em
 
 ```bash
 # 1. Clone
-git clone https://github.com/andrelealpb/HappyDoGuard.git
-cd HappyDoGuard
+git clone https://github.com/andrelealpb/FlacGuard.git
+cd FlacGuard
 
 # 2. Configure
 cp .env.example .env
@@ -87,4 +87,4 @@ Autenticação: **JWT** (dashboard) ou **API Key** (`X-API-Key` header) para int
 
 ## Licença
 
-Proprietary — HappyDo © 2026
+Proprietary — Flac © 2026

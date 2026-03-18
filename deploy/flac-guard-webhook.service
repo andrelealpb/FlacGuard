@@ -1,17 +1,17 @@
 [Unit]
-Description=HappyDo Guard Deploy Webhook
+Description=Flac Guard Deploy Webhook
 After=network.target docker.service
 Requires=docker.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/HappyDoGuard/deploy
-ExecStart=/usr/bin/node /opt/HappyDoGuard/deploy/webhook.js
+WorkingDirectory=/opt/FlacGuard/deploy
+ExecStart=/usr/bin/node /opt/FlacGuard/deploy/webhook.js
 Restart=always
 RestartSec=5
 Environment=WEBHOOK_PORT=9000
 Environment=DEPLOY_BRANCH=main
-EnvironmentFile=-/opt/HappyDoGuard/.env
+EnvironmentFile=-/opt/FlacGuard/.env
 
 [Install]
 WantedBy=multi-user.target

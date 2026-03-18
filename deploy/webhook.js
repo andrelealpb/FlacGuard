@@ -1,4 +1,4 @@
-// HappyDo Guard — Auto-deploy webhook v3
+// Flac Guard — Auto-deploy webhook v3
 const http = require('http');
 const crypto = require('crypto');
 const { execFile, execSync } = require('child_process');
@@ -9,7 +9,7 @@ const PORT = process.env.WEBHOOK_PORT || 9000;
 const SECRET = process.env.WEBHOOK_SECRET || '';
 const DEPLOY_SCRIPT = process.env.DEPLOY_SCRIPT || path.join(__dirname, 'deploy.sh');
 const BRANCH = process.env.DEPLOY_BRANCH || 'main';
-const LOG_FILE = process.env.DEPLOY_LOG || '/opt/HappyDoGuard/deploy.log';
+const LOG_FILE = process.env.DEPLOY_LOG || '/opt/FlacGuard/deploy.log';
 
 let deploying = false;
 

@@ -1,6 +1,6 @@
 # Configuração RTMP no App Mibo Smart
 
-Guia para configurar câmeras da linha iM para enviar stream RTMP ao servidor HappyDo Guard.
+Guia para configurar câmeras da linha iM para enviar stream RTMP ao servidor Flac Guard.
 
 ## Pré-requisitos
 
@@ -19,7 +19,7 @@ Guia para configurar câmeras da linha iM para enviar stream RTMP ao servidor Ha
 6. Selecione **Personalizado**
 7. Preencha os campos:
    - **Stream**: Econômica (recomendado para reduzir bandwidth) ou Principal
-   - **Endereço**: IP ou domínio do servidor (ex: `guard.happydo.com.br`)
+   - **Endereço**: IP ou domínio do servidor (ex: `guard.flacguard.com.br`)
    - **Porta**: `1935`
    - **URL RTMP**: `/live/{STREAM_KEY}`
 8. Salve e confirme

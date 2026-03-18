@@ -16,7 +16,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://happydo:happydo@db:5432/happydo_guard
+      - DATABASE_URL=postgresql://flac_guard:flac_guard@db:5432/flac_guard
       - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
       - RTMP_HOST=nginx-rtmp
       - HLS_BASE_URL=http://nginx-rtmp:8080/hls
@@ -55,15 +55,15 @@ services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      - POSTGRES_USER=happydo
-      - POSTGRES_PASSWORD=happydo
-      - POSTGRES_DB=happydo_guard
+      - POSTGRES_USER=flac_guard
+      - POSTGRES_PASSWORD=flac_guard
+      - POSTGRES_DB=flac_guard
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U happydo -d happydo_guard"]
+      test: ["CMD-SHELL", "pg_isready -U flac_guard -d flac_guard"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -72,10 +72,10 @@ services:
 volumes:
   pgdata:
     external: true
-    name: happydo-guard_pgdata
+    name: flac-guard_pgdata
   hls_data:
     external: true
-    name: happydo-guard_hls_data
+    name: flac-guard_hls_data
   recordings:
     external: true
-    name: happydo-guard_recordings
+    name: flac-guard_recordings

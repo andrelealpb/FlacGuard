@@ -1,11 +1,11 @@
 [Unit]
-Description=HappyDo Guard RTSP-to-RTMP Agent
+Description=Flac Guard RTSP-to-RTMP Agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/opt/happydo/rtsp-to-rtmp.sh /etc/happydo-agent.conf
+ExecStart=/opt/flac-guard/rtsp-to-rtmp.sh /etc/flac-guard-agent.conf
 Restart=always
 RestartSec=15
 StandardOutput=journal

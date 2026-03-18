@@ -80,7 +80,7 @@ function Login() {
         }}
       >
         <h1 style={{ margin: "0 0 0.25rem", fontSize: "1.5rem", color: "#1a1a2e" }}>
-          HappyDo Guard
+          Flac Guard
         </h1>
         <p style={{ margin: "0 0 1.5rem", color: "#666", fontSize: "0.875rem" }}>
           {isSetup ? "Configure o primeiro administrador" : "Faça login para acessar o painel"}

@@ -60,7 +60,7 @@ app.use('/hooks', hooksRouter);
 app.get('/api/deploy-status', (_req, res) => {
   // Try deploy-status.json from host (mounted volume)
   const paths = [
-    '/opt/HappyDoGuard/deploy-status.json',
+    '/opt/FlacGuard/deploy-status.json',
     '/app/deploy-status.json',
   ];
   for (const p of paths) {
@@ -91,7 +91,7 @@ app.get('/api/deploy-status', (_req, res) => {
 app.get('/health', async (_req, res) => {
   try {
     await pool.query('SELECT 1');
-    res.json({ status: 'ok', service: 'happydo-guard-api' });
+    res.json({ status: 'ok', service: 'flac-guard-api' });
   } catch (err) {
     res.status(503).json({ status: 'error', message: err.message });
   }
@@ -135,7 +135,7 @@ async function runMigrations() {
 runMigrations()
   .then(() => {
     app.listen(PORT, () => {
-      console.log(`HappyDo Guard API running on port ${PORT}`);
+      console.log(`Flac Guard API running on port ${PORT}`);
 
       // Start background services after a delay (let nginx-rtmp be ready)
       setTimeout(() => {
@@ -193,7 +193,7 @@ runMigrations()
     console.error('Migration error:', err.message);
     // Start anyway so the API is accessible
     app.listen(PORT, () => {
-      console.log(`HappyDo Guard API running on port ${PORT} (migrations had errors)`);
+      console.log(`Flac Guard API running on port ${PORT} (migrations had errors)`);
     });
   });
 

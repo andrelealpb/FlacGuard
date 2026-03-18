@@ -50,7 +50,7 @@ function App() {
         }}
       >
         <h1 style={{ margin: 0, fontSize: "1.25rem", whiteSpace: "nowrap" }}>
-          HappyDo Guard
+          Flac Guard
         </h1>
         <nav style={{ display: "flex", gap: "0.5rem", flex: 1 }}>
           {navItems.map((item) => (
