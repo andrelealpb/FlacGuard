@@ -25,6 +25,7 @@ interface Camera {
   motion_sensitivity: number;
   rtmp_url?: string;
   hls_url?: string;
+  storage_quota_gb: number | null;
   rtmp_public_url?: string;
   hls_public_url?: string;
   created_at: string;
@@ -45,6 +46,7 @@ interface CameraForm {
   recording_mode: string;
   retention_days: number;
   motion_sensitivity: number;
+  storage_quota_gb: string; // string for input handling, "" = null/unlimited
 }
 
 interface DiskUsageEntry {
@@ -53,6 +55,7 @@ interface DiskUsageEntry {
   recording_count: number;
   face_bytes: string;
   face_count: number;
+  oldest_recording_at: string | null;
 }
 
 interface DiskUsageMap {
@@ -67,6 +70,7 @@ const emptyForm: CameraForm = {
   recording_mode: "continuous",
   retention_days: 21,
   motion_sensitivity: 5,
+  storage_quota_gb: "",
 };
 
 function formatBytes(bytes: number) {
@@ -346,6 +350,140 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
   );
 }
 
+interface SystemAlert {
+  id: string;
+  type: string;
+  severity: string;
+  title: string;
+  message: string;
+  camera_id: string | null;
+  camera_name: string | null;
+  metadata: Record<string, unknown>;
+  resolved: boolean;
+  created_at: string;
+}
+
+function AlertsBox({ apiFetch }: { apiFetch: (url: string, opts?: RequestInit) => Promise<Response> }) {
+  const [alerts, setAlerts] = useState<SystemAlert[]>([]);
+  const [expanded, setExpanded] = useState(true);
+
+  const loadAlerts = () => {
+    apiFetch("/api/alerts?resolved=false&limit=20")
+      .then((r) => {
+        if (!r.ok) return;
+        return r.json();
+      })
+      .then((data) => {
+        if (Array.isArray(data)) setAlerts(data);
+      })
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    loadAlerts();
+    const interval = setInterval(loadAlerts, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleResolve = async (alertId: string) => {
+    try {
+      await apiFetch(`/api/alerts/${alertId}/resolve`, { method: "PATCH" });
+      loadAlerts();
+    } catch {}
+  };
+
+  if (alerts.length === 0) return null;
+
+  const severityColors: Record<string, { bg: string; border: string; icon: string }> = {
+    critical: { bg: "#ffebee", border: "#ef9a9a", icon: "\u26A0" },
+    warning: { bg: "#fff8e1", border: "#ffe082", icon: "\u26A0" },
+    info: { bg: "#e3f2fd", border: "#90caf9", icon: "\u2139" },
+  };
+
+  return (
+    <div style={{
+      marginBottom: "1rem",
+      border: "1px solid #e0e0e0",
+      borderRadius: "8px",
+      overflow: "hidden",
+    }}>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          padding: "0.6rem 1rem",
+          background: alerts.some(a => a.severity === "critical") ? "#ffebee" : "#fff8e1",
+          cursor: "pointer",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          fontWeight: 600,
+          fontSize: "0.85rem",
+        }}
+      >
+        <span>
+          Alertas do Sistema ({alerts.length})
+        </span>
+        <span style={{ fontSize: "0.75rem", color: "#666" }}>
+          {expanded ? "\u25B2" : "\u25BC"}
+        </span>
+      </div>
+      {expanded && (
+        <div style={{ background: "#fff" }}>
+          {alerts.map((alert) => {
+            const colors = severityColors[alert.severity] || severityColors.info;
+            return (
+              <div
+                key={alert.id}
+                style={{
+                  padding: "0.75rem 1rem",
+                  borderBottom: "1px solid #f0f0f0",
+                  background: colors.bg,
+                  borderLeft: `4px solid ${colors.border}`,
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "0.75rem",
+                }}
+              >
+                <span style={{ fontSize: "1.1rem", flexShrink: 0, marginTop: "0.1rem" }}>
+                  {colors.icon}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.2rem" }}>
+                    {alert.title}
+                  </div>
+                  <div style={{ fontSize: "0.78rem", color: "#555", lineHeight: 1.4 }}>
+                    {alert.message}
+                  </div>
+                  <div style={{ fontSize: "0.7rem", color: "#999", marginTop: "0.3rem" }}>
+                    {new Date(alert.created_at).toLocaleString("pt-BR")}
+                    {alert.camera_name && ` \u2014 ${alert.camera_name}`}
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleResolve(alert.id)}
+                  title="Resolver alerta"
+                  style={{
+                    padding: "0.25rem 0.6rem",
+                    border: "1px solid #ccc",
+                    borderRadius: "4px",
+                    background: "#fff",
+                    cursor: "pointer",
+                    fontSize: "0.7rem",
+                    flexShrink: 0,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Resolver
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Cameras() {
   const { apiFetch } = useAuth();
   const [cameras, setCameras] = useState<Camera[]>([]);
@@ -381,6 +519,7 @@ function Cameras() {
             recording_count: u.recording_count || 0,
             face_bytes: u.face_bytes || "0",
             face_count: u.face_count || 0,
+            oldest_recording_at: u.oldest_recording_at || null,
           };
         }
         setDiskUsage(usageMap);
@@ -422,7 +561,10 @@ function Cameras() {
       const res = await apiFetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          ...form,
+          storage_quota_gb: form.storage_quota_gb ? parseFloat(form.storage_quota_gb) : null,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -449,6 +591,7 @@ function Cameras() {
       recording_mode: camera.recording_mode || "continuous",
       retention_days: camera.retention_days || 21,
       motion_sensitivity: camera.motion_sensitivity || 5,
+      storage_quota_gb: camera.storage_quota_gb != null ? String(camera.storage_quota_gb) : "",
     });
     setEditingId(camera.id);
     setShowForm(true);
@@ -567,6 +710,9 @@ function Cameras() {
         </div>
       )}
 
+      {/* System Alerts */}
+      <AlertsBox apiFetch={apiFetch} />
+
       {/* Filter by PDV */}
       <div style={{ marginBottom: "1rem" }}>
         <select
@@ -669,8 +815,8 @@ function Cameras() {
                 )}
               </div>
 
-              {/* Recording Mode + Retention + Sensitivity row */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.75rem" }}>
+              {/* Recording Mode + Retention + Sensitivity + Quota row */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "0.75rem" }}>
                 {/* Recording Mode */}
                 <div>
                   <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.25rem" }}>
@@ -734,6 +880,26 @@ function Cameras() {
                     {form.recording_mode === "motion"
                       ? "Menor = mais sensível"
                       : "Disponível no modo movimento"}
+                  </div>
+                </div>
+
+                {/* Storage Quota */}
+                <div>
+                  <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.25rem" }}>
+                    Franquia (GB)
+                  </label>
+                  <input
+                    type="number"
+                    min={0.1}
+                    max={1000}
+                    step={0.1}
+                    value={form.storage_quota_gb}
+                    onChange={(e) => setForm({ ...form, storage_quota_gb: e.target.value })}
+                    placeholder="Ilimitado"
+                    style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", border: "1px solid #ccc", boxSizing: "border-box" }}
+                  />
+                  <div style={{ fontSize: "0.7rem", color: "#666", marginTop: "0.2rem" }}>
+                    Vazio = sem limite de espaço
                   </div>
                 </div>
               </div>
@@ -811,7 +977,18 @@ function Cameras() {
                       </span>
                     </td>
                     <td style={{ padding: "0.6rem 1rem", fontSize: "0.8rem" }}>
-                      {cam.retention_days}d
+                      <div>{cam.retention_days}d</div>
+                      {usage?.oldest_recording_at && (
+                        <div style={{ fontSize: "0.65rem", color: "#999", marginTop: "0.15rem" }}>
+                          desde {new Date(usage.oldest_recording_at).toLocaleDateString("pt-BR")}{" "}
+                          {new Date(usage.oldest_recording_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                        </div>
+                      )}
+                      {cam.storage_quota_gb != null && (
+                        <div style={{ fontSize: "0.65rem", color: "#1565c0", marginTop: "0.1rem" }}>
+                          franquia: {cam.storage_quota_gb} GB
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding: "0.6rem 1rem" }}>
                       <div style={{ fontSize: "0.8rem", fontFamily: "monospace", fontWeight: 600 }}>

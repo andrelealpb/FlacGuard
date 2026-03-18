@@ -140,6 +140,16 @@ router.get('/disk-usage', authenticate, async (_req, res) => {
       } catch { /* skip */ }
     }
 
+    // Oldest recording per camera
+    const { rows: oldestRows } = await pool.query(
+      `SELECT camera_id, MIN(started_at) as oldest_recording_at
+       FROM recordings GROUP BY camera_id`
+    );
+    const oldestMap = {};
+    for (const o of oldestRows) {
+      oldestMap[o.camera_id] = o.oldest_recording_at;
+    }
+
     const rows = recRows.map(r => {
       const face = faceSizeMap[r.camera_id] || { bytes: 0, count: 0 };
       const recBytes = parseInt(r.recording_bytes) || 0;
@@ -152,6 +162,7 @@ router.get('/disk-usage', authenticate, async (_req, res) => {
         recording_count: r.recording_count,
         face_bytes: String(face.bytes),
         face_count: face.count,
+        oldest_recording_at: oldestMap[r.camera_id] || null,
       };
     });
     rows.sort((a, b) => parseInt(b.total_bytes) - parseInt(a.total_bytes));
@@ -164,7 +175,7 @@ router.get('/disk-usage', authenticate, async (_req, res) => {
 // POST /api/cameras — Register new camera
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { name, pdv_id, model, location_description, recording_mode, retention_days, motion_sensitivity } = req.body;
+    const { name, pdv_id, model, location_description, recording_mode, retention_days, motion_sensitivity, storage_quota_gb } = req.body;
 
     if (!name || !pdv_id || !model) {
       return res.status(400).json({ error: 'name, pdv_id and model are required' });
@@ -181,6 +192,9 @@ router.post('/', authenticate, async (req, res) => {
     if (motion_sensitivity !== undefined && (motion_sensitivity < 1 || motion_sensitivity > 100)) {
       return res.status(400).json({ error: 'motion_sensitivity must be between 1 and 100' });
     }
+    if (storage_quota_gb !== undefined && storage_quota_gb !== null && (storage_quota_gb < 0.1 || storage_quota_gb > 1000)) {
+      return res.status(400).json({ error: 'storage_quota_gb must be between 0.1 and 1000' });
+    }
 
     // Verify PDV exists
     const pdvCheck = await pool.query('SELECT id FROM pdvs WHERE id = $1', [pdv_id]);
@@ -192,11 +206,12 @@ router.post('/', authenticate, async (req, res) => {
     const camera_group = groupFromModel(model);
 
     const { rows } = await pool.query(
-      `INSERT INTO cameras (name, stream_key, model, camera_group, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO cameras (name, stream_key, model, camera_group, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity, storage_quota_gb)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [name, streamKey, model, camera_group, location_description, pdv_id,
-       recording_mode || 'continuous', retention_days || 21, motion_sensitivity || 5]
+       recording_mode || 'continuous', retention_days || 21, motion_sensitivity || 5,
+       storage_quota_gb != null ? storage_quota_gb : null]
     );
     const camera = rows[0];
     res.status(201).json({
@@ -237,7 +252,7 @@ router.get('/:id', authenticate, async (req, res) => {
 // PATCH /api/cameras/:id — Update camera
 router.patch('/:id', authenticate, async (req, res) => {
   try {
-    const { name, model, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity } = req.body;
+    const { name, model, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity, storage_quota_gb } = req.body;
 
     if (model && !VALID_MODELS.includes(model)) {
       return res.status(400).json({ error: `Invalid model. Must be one of: ${VALID_MODELS.join(', ')}` });
@@ -257,23 +272,35 @@ router.patch('/:id', authenticate, async (req, res) => {
     if (motion_sensitivity !== undefined && (motion_sensitivity < 1 || motion_sensitivity > 100)) {
       return res.status(400).json({ error: 'motion_sensitivity must be between 1 and 100' });
     }
+    if (storage_quota_gb !== undefined && storage_quota_gb !== null && (storage_quota_gb < 0.1 || storage_quota_gb > 1000)) {
+      return res.status(400).json({ error: 'storage_quota_gb must be between 0.1 and 1000' });
+    }
 
     const camera_group = model ? groupFromModel(model) : undefined;
 
+    // Build dynamic SET clause to handle storage_quota_gb (which can be explicitly null)
+    const sets = [
+      'name = COALESCE($2, name)',
+      'model = COALESCE($3, model)',
+      'camera_group = COALESCE($4, camera_group)',
+      'location_description = COALESCE($5, location_description)',
+      'pdv_id = COALESCE($6, pdv_id)',
+      'recording_mode = COALESCE($7, recording_mode)',
+      'retention_days = COALESCE($8, retention_days)',
+      'motion_sensitivity = COALESCE($9, motion_sensitivity)',
+      'updated_at = now()',
+    ];
+    const params = [req.params.id, name, model, camera_group, location_description, pdv_id,
+       recording_mode, retention_days, motion_sensitivity];
+
+    if (storage_quota_gb !== undefined) {
+      params.push(storage_quota_gb);
+      sets.push(`storage_quota_gb = $${params.length}`);
+    }
+
     const { rows } = await pool.query(
-      `UPDATE cameras SET
-         name = COALESCE($2, name),
-         model = COALESCE($3, model),
-         camera_group = COALESCE($4, camera_group),
-         location_description = COALESCE($5, location_description),
-         pdv_id = COALESCE($6, pdv_id),
-         recording_mode = COALESCE($7, recording_mode),
-         retention_days = COALESCE($8, retention_days),
-         motion_sensitivity = COALESCE($9, motion_sensitivity),
-         updated_at = now()
-       WHERE id = $1 RETURNING *`,
-      [req.params.id, name, model, camera_group, location_description, pdv_id,
-       recording_mode, retention_days, motion_sensitivity]
+      `UPDATE cameras SET ${sets.join(', ')} WHERE id = $1 RETURNING *`,
+      params
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
     res.json(rows[0]);
