@@ -87,7 +87,7 @@ app.get('/api/deploy-status', (_req, res) => {
 app.get('/health', async (_req, res) => {
   try {
     await pool.query('SELECT 1');
-    res.json({ status: 'ok', service: 'happydo-guard-api' });
+    res.json({ status: 'ok', service: 'happydo-guard-api', deploy_test: 'webhook-ok-pr43' });
   } catch (err) {
     res.status(503).json({ status: 'error', message: err.message });
   }
