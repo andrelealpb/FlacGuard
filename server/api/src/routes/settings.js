@@ -14,7 +14,7 @@ router.get('/pulse', authenticate, authorize('admin'), async (_req, res) => {
     const map = Object.fromEntries(rows.map(r => [r.key, r.value]));
 
     res.json({
-      api_url: map.pulse_api_url || process.env.PULSE_API_URL || 'https://flacpulse-production.up.railway.app/api',
+      api_url: map.pulse_api_url || process.env.PULSE_API_URL || 'https://happydopulse-production.up.railway.app/api',
       email: map.pulse_email || process.env.PULSE_EMAIL || '',
       has_password: !!(map.pulse_password || process.env.PULSE_PASSWORD),
     });
@@ -42,7 +42,7 @@ router.put('/pulse', authenticate, authorize('admin'), async (req, res) => {
       );
     };
 
-    await upsert('pulse_api_url', api_url || 'https://flacpulse-production.up.railway.app/api');
+    await upsert('pulse_api_url', api_url || 'https://happydopulse-production.up.railway.app/api');
     await upsert('pulse_email', email);
     if (password) {
       await upsert('pulse_password', password);

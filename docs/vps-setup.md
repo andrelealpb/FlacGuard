@@ -53,7 +53,7 @@ sudo ufw enable
 
 ```bash
 sudo apt install -y certbot
-sudo certbot certonly --standalone -d guard.flac.com.br
+sudo certbot certonly --standalone -d guard.flacguard.com.br
 ```
 
 Configure o Nginx do dashboard para usar o certificado gerado.

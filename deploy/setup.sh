@@ -24,14 +24,14 @@ if [ ! -f "$DEPLOY_DIR/deploy-status.json" ]; then
 fi
 
 # Install systemd service
-cp "$DEPLOY_DIR/deploy/flac-webhook.service" /etc/systemd/system/
+cp "$DEPLOY_DIR/deploy/flac-guard-webhook.service" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable flac-webhook
-systemctl restart flac-webhook
+systemctl enable flac-guard-webhook
+systemctl restart flac-guard-webhook
 
 echo ""
 echo "=== Webhook Status ==="
-systemctl status flac-webhook --no-pager -l
+systemctl status flac-guard-webhook --no-pager -l
 
 echo ""
 echo "=== Setup Complete ==="
@@ -49,5 +49,5 @@ echo "=== Diagnósticos ==="
 echo "  Testar deploy manual: curl -X POST http://localhost:9000/deploy"
 echo "  Ver status:           curl http://localhost:9000/status"
 echo "  Ver logs:             curl http://localhost:9000/logs"
-echo "  Logs do systemd:      journalctl -u flac-webhook -f"
+echo "  Logs do systemd:      journalctl -u flac-guard-webhook -f"
 echo ""

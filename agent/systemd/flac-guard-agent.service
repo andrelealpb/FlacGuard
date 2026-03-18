@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/opt/flac/rtsp-to-rtmp.sh /etc/flac-agent.conf
+ExecStart=/opt/flac-guard/rtsp-to-rtmp.sh /etc/flac-guard-agent.conf
 Restart=always
 RestartSec=15
 StandardOutput=journal

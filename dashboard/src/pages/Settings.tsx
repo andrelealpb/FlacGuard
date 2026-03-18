@@ -229,7 +229,7 @@ function Settings() {
                   type="url"
                   value={form.api_url}
                   onChange={(e) => setForm({ ...form, api_url: e.target.value })}
-                  placeholder="https://flacpulse-production.up.railway.app/api"
+                  placeholder="https://happydopulse-production.up.railway.app/api"
                   style={inputStyle}
                 />
               </div>
@@ -503,7 +503,7 @@ function Settings() {
                   type="text"
                   value={serverForm.rtmp_public_host}
                   onChange={(e) => setServerForm({ ...serverForm, rtmp_public_host: e.target.value })}
-                  placeholder="Ex: 147.93.7.251 ou guard.flac.com.br"
+                  placeholder="Ex: 147.93.7.251 ou guard.flacguard.com.br"
                   required
                   style={inputStyle}
                 />

@@ -22,13 +22,13 @@ async function getConfig() {
     );
     const map = Object.fromEntries(rows.map(r => [r.key, r.value]));
     return {
-      apiUrl: map.pulse_api_url || process.env.PULSE_API_URL || 'https://flacpulse-production.up.railway.app/api',
+      apiUrl: map.pulse_api_url || process.env.PULSE_API_URL || 'https://happydopulse-production.up.railway.app/api',
       email: map.pulse_email || process.env.PULSE_EMAIL || '',
       password: map.pulse_password || process.env.PULSE_PASSWORD || '',
     };
   } catch {
     return {
-      apiUrl: process.env.PULSE_API_URL || 'https://flacpulse-production.up.railway.app/api',
+      apiUrl: process.env.PULSE_API_URL || 'https://happydopulse-production.up.railway.app/api',
       email: process.env.PULSE_EMAIL || '',
       password: process.env.PULSE_PASSWORD || '',
     };

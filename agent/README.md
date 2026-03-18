@@ -23,15 +23,15 @@ Ou manualmente:
 
 ```bash
 sudo apt update && sudo apt install -y ffmpeg
-sudo cp flac-agent.service /etc/systemd/system/
+sudo cp flac-guard-agent.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable flac-agent
-sudo systemctl start flac-agent
+sudo systemctl enable flac-guard-agent
+sudo systemctl start flac-guard-agent
 ```
 
 ## Configuração
 
-Edite `/etc/flac-agent.conf`:
+Edite `/etc/flac-guard-agent.conf`:
 
 ```
 CAMERA_IP=192.168.1.100
@@ -46,8 +46,8 @@ STREAM_KEY=sua_stream_key_aqui
 
 ```bash
 # Status do serviço
-sudo systemctl status flac-agent
+sudo systemctl status flac-guard-agent
 
 # Logs em tempo real
-journalctl -u flac-agent -f
+journalctl -u flac-guard-agent -f
 ```

@@ -108,7 +108,7 @@ router.post('/sync', authenticate, async (_req, res) => {
 router.get('/pulse-status', authenticate, async (_req, res) => {
   res.json({
     configured: await isPulseConfigured(),
-    api_url: process.env.PULSE_API_URL || 'https://flacpulse-production.up.railway.app/api',
+    api_url: process.env.PULSE_API_URL || 'https://happydopulse-production.up.railway.app/api',
   });
 });
 

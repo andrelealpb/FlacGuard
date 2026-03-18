@@ -151,7 +151,7 @@ O app é desenvolvido no Claude Code e compilado na cloud via GitHub Actions. Se
 | Método | Detalhe |
 |--------|---------|
 | ADB via rede | `adb connect IP:5555` + `adb install` (mesmo Wi-Fi) |
-| Download HTTP | App busca atualização em `guard.flac.com.br/apk/latest` |
+| Download HTTP | App busca atualização em `guard.flacguard.com.br/apk/latest` |
 | Pendrive/SD | Copiar APK, instalar local |
 
 Sem Google Play. Distribuição interna (sideload). PIPO, Sunmi e Lenovo permitem instalação de fontes externas.
@@ -160,7 +160,7 @@ Sem Google Play. Distribuição interna (sideload). PIPO, Sunmi e Lenovo permite
 
 ```json
 {
-  "server": "guard.flac.com.br",
+  "server": "guard.flacguard.com.br",
   "port": 1935,
   "stream_key": "pdv_dct_loja_facecam",
   "camera_source": "auto",

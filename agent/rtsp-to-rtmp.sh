@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # Load config
-CONFIG_FILE="${1:-/etc/flac-agent.conf}"
+CONFIG_FILE="${1:-/etc/flac-guard-agent.conf}"
 if [ ! -f "$CONFIG_FILE" ]; then
   echo "Config file not found: $CONFIG_FILE"
   exit 1
