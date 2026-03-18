@@ -1,14 +1,14 @@
 # Flac Guard — Arquitetura do Sistema
 
-> Versão 2.8 | Março 2026 | **Fase 1 Concluída**
+> Versão 3.0 | Março 2026 | **Fase 1 Concluída**
 
 ---
 
 ## 1. Visão Geral
 
-Happydo opera 60-80 mercadinhos autônomos de autoatendimento em João Pessoa/PB. Cada PDV possui 1-2 câmeras MIBO Intelbras (~80 total) e um dispositivo Android.
+A Happydo Mercadinhos opera 60-80 mercadinhos autônomos de autoatendimento em João Pessoa/PB. Cada PDV possui 1-2 câmeras MIBO Intelbras (~80 total) e um dispositivo Android.
 
-O sistema combina **câmeras MIBO** (teto, visão geral) + **app Guard Cam** (frontal, rostos) nos dispositivos Android já existentes, alimentando um servidor cloud com gravação por movimento, reconhecimento facial, busca cruzada por timestamp e alertas via webhook.
+O **Flac Guard** combina **câmeras MIBO** (teto, visão geral) + **app Flac Guard Cam** (frontal, rostos) nos dispositivos Android já existentes, alimentando um servidor cloud com gravação por movimento, reconhecimento facial, busca cruzada por timestamp e alertas via webhook.
 
 **Armazenamento unificado:** para o servidor, MIBO e Guard Cam são idênticos — mesmo pipeline, mesma gravação, mesmos endpoints.
 
@@ -56,6 +56,8 @@ O sistema combina **câmeras MIBO** (teto, visão geral) + **app Guard Cam** (fr
 | PIPO X9R | ❌ | ✅ 4x USB | 2GB | 4.4-5.1 |
 | Sunmi D2 Mini | ⚠️ Versão scan | ✅ | 2GB | 8.1 |
 | Lenovo Tab 10.1" | ✅ Frontal | ✅ OTG | 4GB | 14 |
+
+**Nota sobre PIPO:** problemas de energia USB (reinicia com 2 dispositivos conectados). Webcam USB inviável nesses ~60 PDVs. Solução: câmera MIBO extra (iM3 C ~R$ 220 ou iMX ~R$ 180) posicionada na altura do rosto.
 
 ---
 
@@ -133,16 +135,14 @@ App Android nativo Kotlin, ultra-leve, desenvolvido como parte do projeto. Captu
 
 ### 4.5 Pipeline de Build (CI/CD)
 
-O app é desenvolvido no Claude Code e compilado na cloud via GitHub Actions. Sem Android Studio local.
-
 ```
 1. Escrever código Kotlin (Claude Code SSH)
 2. Push → branch guard-cam/* no GitHub
-3. GitHub Actions dispara:
-   ├── Setup JDK 17 + Android SDK + Gradle cache
+3. GitHub Actions:
+   ├── JDK 17 + Android SDK + Gradle cache
    ├── ./gradlew assembleRelease
    ├── Assinar APK
-   └── Upload artifact (ou GitHub Release)
+   └── Upload artifact / GitHub Release
 4. Distribuir APK nos dispositivos
 ```
 
@@ -150,17 +150,15 @@ O app é desenvolvido no Claude Code e compilado na cloud via GitHub Actions. Se
 
 | Método | Detalhe |
 |--------|---------|
-| ADB via rede | `adb connect IP:5555` + `adb install` (mesmo Wi-Fi) |
-| Download HTTP | App busca atualização em `guard.flacguard.com.br/apk/latest` |
+| ADB via rede | `adb connect IP:5555` + `adb install` |
+| Download HTTP | `guard.flac.com.br/apk/latest` |
 | Pendrive/SD | Copiar APK, instalar local |
-
-Sem Google Play. Distribuição interna (sideload). PIPO, Sunmi e Lenovo permitem instalação de fontes externas.
 
 ### 4.7 Configuração
 
 ```json
 {
-  "server": "guard.flacguard.com.br",
+  "server": "guard.flac.com.br",
   "port": 1935,
   "stream_key": "pdv_dct_loja_facecam",
   "camera_source": "auto",
@@ -173,10 +171,6 @@ Sem Google Play. Distribuição interna (sideload). PIPO, Sunmi e Lenovo permite
 
 ## 5. Busca Cruzada por Timestamp
 
-### Conceito
-
-A partir de um momento em qualquer câmera, buscar o mesmo instante em todas as outras. Dashboard exibe como mosaico sincronizado.
-
 ### Endpoints
 
 | Escopo | Endpoint | Retorno |
@@ -184,14 +178,6 @@ A partir de um momento em qualquer câmera, buscar o mesmo instante em todas as 
 | Mesma câmera | `GET /api/cameras/:id/recording?timestamp=T&duration=300` | Trecho MP4 |
 | Mesmo PDV | `GET /api/pdvs/:id/recordings?timestamp=T` | MIBO + Guard Cam |
 | Todos PDVs | `GET /api/recordings/cross-search?timestamp=T&range=300` | Tudo ±5min |
-
-### Caso de Uso
-
-1. Suspeito na Guard Cam do PDV 12 às 14:32
-2. Clica → busca cruzada automática:
-   - MIBO PDV 12 → o que a pessoa fez
-   - Guard Cam outros PDVs → se visitou mais lojas
-3. Mosaico sincronizado no Dashboard
 
 ### Integração com Face Search
 
@@ -209,8 +195,6 @@ Pipeline unificado por frame (MIBO e Guard Cam, sem distinção):
 1. Movimento → gravar?
 2. Rostos (InsightFace) → embedding 512D → pgvector
 3. Watchlist → match >85% → webhook
-
-Streams Guard Cam priorizados (ângulo frontal = embeddings superiores).
 
 ### Casos de Uso
 
@@ -276,21 +260,8 @@ Auth: API Key (server-to-server), JWT (dashboard), device token (Guard Cam).
 | IDE | Claude Code (SSH no VPS) |
 | Repositório | GitHub (`flac-guard`) |
 | CI/CD Server | GitHub Actions → deploy VPS |
-| **CI/CD Android** | **GitHub Actions → build APK (JDK 17 + Android SDK)** |
+| CI/CD Android | GitHub Actions → build APK |
 | Banco | PostgreSQL + pgvector no VPS |
-| Monitoramento | Healthcheck custom |
-
-### Workflow do Guard Cam
-
-```
-Claude Code → escreve Kotlin → push guard-cam/*
-  → GitHub Actions:
-    ├── JDK 17 + Android SDK + Gradle cache
-    ├── ./gradlew assembleRelease
-    ├── Assina APK
-    └── Upload artifact / GitHub Release
-  → Distribuir: ADB rede | HTTP download | pendrive
-```
 
 ---
 
@@ -299,7 +270,7 @@ Claude Code → escreve Kotlin → push guard-cam/*
 | | Valor |
 |--|-------|
 | CAPEX Pi Zeros | ~R$ 3.000 |
-| CAPEX webcams USB | ~R$ 2.000-2.600 |
+| CAPEX webcams USB (Sunmi/Lenovo) | ~R$ 2.000-2.600 |
 | **CAPEX total** | **~R$ 5.000-5.600** |
 | OPEX Fase 2 | ~R$ 55/mês |
 | OPEX Rollout | ~R$ 55-100/mês |
@@ -324,15 +295,15 @@ Claude Code → escreve Kotlin → push guard-cam/*
 
 **Bloco D — Desenvolvimento Guard Cam + Busca Cruzada (sem 4-6)**
 16. Scaffold Kotlin + Gradle no repo `guard-cam/`
-17. GitHub Actions: workflow build APK (JDK 17 + Android SDK)
+17. GitHub Actions: workflow build APK
 18. CameraManager: câmera integrada + USB UVC
 19. RtmpPublisher: H.264 hardware + RTMP push
-20. StreamService: Foreground Service + auto-start + reconnect
-21. Config via QR code / setup
+20. StreamService: Foreground Service + auto-start
+21. Config via QR code
 22. API: /guard-cam/config + heartbeat
 23. Testar PIPO X9R + Sunmi D2 Mini + Lenovo Tab
-24. Distribuição APK (ADB rede + HTTP download)
-25. Dashboard: busca cruzada por timestamp (mosaico)
+24. Distribuição APK
+25. Dashboard: busca cruzada (mosaico)
 26. API: /pdvs/:id/recordings + /recordings/cross-search
 
 ### Fase 3 — Piloto (5 PDVs)
@@ -343,8 +314,8 @@ Claude Code → escreve Kotlin → push guard-cam/*
 
 ### Fase 4 — Rollout (~80 câmeras + ~70 Guard Cams)
 1. Config ~77 câmeras iM
-2. Guard Cam em todos Android
-3. Webcams USB onde necessário
+2. Guard Cam em Sunmi/Lenovo
+3. iM3 C extra nos PDVs PIPO (captura facial)
 4. Pi Zeros para ICs
 5. API Key integração
 6. Monitoramento
@@ -364,14 +335,14 @@ flac-guard/
 ├── ARCHITECTURE.md
 ├── docker-compose.yml
 ├── .github/workflows/
-│   ├── deploy.yml                     ← CI/CD SERVIDOR
-│   └── android-build.yml             ← CI/CD GUARD CAM APK
+│   ├── deploy.yml
+│   └── android-build.yml
 ├── server/
 │   ├── nginx-rtmp/nginx.conf
 │   ├── api/src/
 │   │   ├── routes/
 │   │   │   ├── cameras.js
-│   │   │   ├── recordings.js         ← BUSCA CRUZADA
+│   │   │   ├── recordings.js
 │   │   │   ├── faces.js
 │   │   │   ├── guard-cam.js
 │   │   │   ├── events.js
@@ -386,34 +357,29 @@ flac-guard/
 ├── dashboard/src/pages/
 │   ├── Live.jsx
 │   ├── Playback.jsx
-│   ├── CrossSearch.jsx                ← MOSAICO SINCRONIZADO
+│   ├── CrossSearch.jsx
 │   ├── FaceSearch.jsx
 │   ├── Watchlist.jsx
 │   ├── Visitors.jsx
 │   ├── GuardCams.jsx
 │   └── Settings.jsx
-├── guard-cam/                         ← APP ANDROID (KOTLIN)
-│   ├── README.md
+├── guard-cam/
 │   ├── build.gradle.kts
 │   ├── settings.gradle.kts
-│   ├── gradle/
-│   │   └── libs.versions.toml        ← VERSION CATALOG
-│   └── app/
-│       ├── build.gradle.kts
-│       └── src/main/
-│           ├── AndroidManifest.xml
-│           └── java/com/flac/guardcam/
-│               ├── GuardCamApp.kt
-│               ├── service/
-│               │   ├── StreamService.kt
-│               │   ├── CameraManager.kt
-│               │   └── RtmpPublisher.kt
-│               ├── config/
-│               │   ├── DeviceConfig.kt
-│               │   └── QrCodeScanner.kt
-│               └── ui/
-│                   ├── SetupActivity.kt
-│                   └── StatusOverlay.kt
+│   └── app/src/main/
+│       ├── AndroidManifest.xml
+│       └── java/com/flacguard/guardcam/
+│           ├── GuardCamApp.kt
+│           ├── service/
+│           │   ├── StreamService.kt
+│           │   ├── CameraManager.kt
+│           │   └── RtmpPublisher.kt
+│           ├── config/
+│           │   ├── DeviceConfig.kt
+│           │   └── QrCodeScanner.kt
+│           └── ui/
+│               ├── SetupActivity.kt
+│               └── StatusOverlay.kt
 ├── agent/ (Pi Zero)
 └── docs/
     ├── guard-cam-setup.md
@@ -425,13 +391,13 @@ flac-guard/
 ## 12. Notas
 
 ### Kotlin vs React Native
-Kotlin nativo: ~30MB RAM. React Native: ~100MB. Em 2GB RAM a diferença é a viabilidade do projeto.
-
-### Build sem Android Studio
-GitHub Actions compila o APK na cloud. Desenvolvedor escreve Kotlin no Claude Code (SSH), push no GitHub, Actions gera APK assinado. Zero dependência local.
+~30MB vs ~100MB RAM. Em 2GB, essa diferença é a viabilidade.
 
 ### Armazenamento Unificado
-MIBO e Guard Cam: mesmo Nginx-RTMP, pipeline, FFmpeg, pgvector, endpoints. Distinção apenas lógica no banco.
+MIBO e Guard Cam: mesmo pipeline, mesmos endpoints. Distinção apenas lógica.
 
-### Busca Cruzada + Face Search
-Face search retorna timestamps → cada resultado tem link de busca cruzada → Dashboard monta mosaico automaticamente.
+### PDVs PIPO — câmera extra
+PIPOs têm problema de energia USB (reiniciam com 2 dispositivos). Webcam inviável. Solução: iM3 C (~R$ 220) ou iMX (~R$ 180) extra, posicionada na altura do rosto, RTMP direto pro servidor.
+
+### RTMP no mercado brasileiro
+RTMP push nativo é praticamente exclusivo da Intelbras (linha MIBO Wi-Fi + linha VIP cabeada). Nenhuma outra marca de consumo (TP-Link, Xiaomi, Hikvision consumer) oferece RTMP push em câmeras Wi-Fi baratas no Brasil.
