@@ -11,7 +11,7 @@ pg.types.setTypeParser(1114, (val) => val);
 export const pool = new pg.Pool({
   connectionString:
     process.env.DATABASE_URL ||
-    'postgresql://flac:flac@db:5432/flac_guard',
+    'postgresql://flac_guard:flac_guard@db:5432/flac_guard',
 });
 
 // Set session timezone so PG converts TIMESTAMPTZ to camera local time
