@@ -17,7 +17,7 @@ function groupFromModel(model) {
 // GET /api/cameras — List cameras with status
 router.get('/', authenticate, async (req, res) => {
   try {
-    const { pdv_id, status, model } = req.query;
+    const { pdv_id, status, model, camera_purpose } = req.query;
     const conditions = [];
     const params = [];
     let idx = 1;
@@ -34,6 +34,10 @@ router.get('/', authenticate, async (req, res) => {
       conditions.push(`c.model = $${idx++}`);
       params.push(model);
     }
+    if (camera_purpose) {
+      conditions.push(`c.camera_purpose = $${idx++}`);
+      params.push(camera_purpose);
+    }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const { rows } = await pool.query(
@@ -48,6 +52,8 @@ router.get('/', authenticate, async (req, res) => {
       recording_mode: r.recording_mode || 'continuous',
       retention_days: r.retention_days || 21,
       motion_sensitivity: r.motion_sensitivity || 5,
+      camera_purpose: r.camera_purpose || 'environment',
+      capture_face: r.capture_face !== undefined ? r.capture_face : true,
     })));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -175,7 +181,7 @@ router.get('/disk-usage', authenticate, async (_req, res) => {
 // POST /api/cameras — Register new camera
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { name, pdv_id, model, location_description, recording_mode, retention_days, motion_sensitivity, storage_quota_gb } = req.body;
+    const { name, pdv_id, model, location_description, recording_mode, retention_days, motion_sensitivity, storage_quota_gb, camera_purpose, capture_face } = req.body;
 
     if (!name || !pdv_id || !model) {
       return res.status(400).json({ error: 'name, pdv_id and model are required' });
@@ -195,6 +201,9 @@ router.post('/', authenticate, async (req, res) => {
     if (storage_quota_gb !== undefined && storage_quota_gb !== null && (storage_quota_gb < 0.1 || storage_quota_gb > 1000)) {
       return res.status(400).json({ error: 'storage_quota_gb must be between 0.1 and 1000' });
     }
+    if (camera_purpose && !['environment', 'face'].includes(camera_purpose)) {
+      return res.status(400).json({ error: 'camera_purpose must be "environment" or "face"' });
+    }
 
     // Verify PDV exists
     const pdvCheck = await pool.query('SELECT id FROM pdvs WHERE id = $1', [pdv_id]);
@@ -204,14 +213,17 @@ router.post('/', authenticate, async (req, res) => {
 
     const streamKey = generateStreamKey();
     const camera_group = groupFromModel(model);
+    const purposeVal = camera_purpose || 'environment';
+    const captureFaceVal = capture_face !== undefined ? capture_face : true;
 
     const { rows } = await pool.query(
-      `INSERT INTO cameras (name, stream_key, model, camera_group, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity, storage_quota_gb)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO cameras (name, stream_key, model, camera_group, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity, storage_quota_gb, camera_purpose, capture_face)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING *`,
       [name, streamKey, model, camera_group, location_description, pdv_id,
        recording_mode || 'continuous', retention_days || 21, motion_sensitivity || 5,
-       storage_quota_gb != null ? storage_quota_gb : null]
+       storage_quota_gb != null ? storage_quota_gb : null,
+       purposeVal, captureFaceVal]
     );
     const camera = rows[0];
     res.status(201).json({
@@ -252,7 +264,7 @@ router.get('/:id', authenticate, async (req, res) => {
 // PATCH /api/cameras/:id — Update camera
 router.patch('/:id', authenticate, async (req, res) => {
   try {
-    const { name, model, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity, storage_quota_gb } = req.body;
+    const { name, model, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity, storage_quota_gb, camera_purpose, capture_face } = req.body;
 
     if (model && !VALID_MODELS.includes(model)) {
       return res.status(400).json({ error: `Invalid model. Must be one of: ${VALID_MODELS.join(', ')}` });
@@ -275,6 +287,9 @@ router.patch('/:id', authenticate, async (req, res) => {
     if (storage_quota_gb !== undefined && storage_quota_gb !== null && (storage_quota_gb < 0.1 || storage_quota_gb > 1000)) {
       return res.status(400).json({ error: 'storage_quota_gb must be between 0.1 and 1000' });
     }
+    if (camera_purpose && !['environment', 'face'].includes(camera_purpose)) {
+      return res.status(400).json({ error: 'camera_purpose must be "environment" or "face"' });
+    }
 
     const camera_group = model ? groupFromModel(model) : undefined;
 
@@ -296,6 +311,16 @@ router.patch('/:id', authenticate, async (req, res) => {
     if (storage_quota_gb !== undefined) {
       params.push(storage_quota_gb);
       sets.push(`storage_quota_gb = $${params.length}`);
+    }
+
+    if (camera_purpose !== undefined) {
+      params.push(camera_purpose);
+      sets.push(`camera_purpose = $${params.length}`);
+    }
+
+    if (capture_face !== undefined) {
+      params.push(capture_face);
+      sets.push(`capture_face = $${params.length}`);
     }
 
     const { rows } = await pool.query(

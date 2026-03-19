@@ -342,6 +342,12 @@ export async function countDistinctVisitors(cameraId, date) {
 /**
  * Get visitor counts over a date range, deduplicated across cameras within each PDV.
  * pdvIds can be null (all), a single string, or an array of IDs.
+ *
+ * Visitor counting priority per PDV:
+ * 1. If a PDV has face-purpose cameras with data, count visitors only from those cameras.
+ * 2. Otherwise, fall back to all cameras with capture_face=true (environment cameras).
+ * This ensures face cameras (better positioned for counting) take priority,
+ * while environment cameras serve as fallback when no face cameras exist.
  */
 export async function getVisitorsByPdv(pdvIds, from, to) {
   // Normalize pdvIds: null = all, string = single, array = multiple
@@ -355,36 +361,60 @@ export async function getVisitorsByPdv(pdvIds, from, to) {
     }
   }
 
-  // Count distinct persons per PDV per day (cross-camera dedup within each PDV)
+  // Per-PDV visitor count using camera priority:
+  // For each PDV+day, prefer face cameras. If no face cameras have data, use all cameras with capture_face.
   const { rows } = await pool.query(
-    `SELECT
-       to_char(fe.detected_at::date, 'YYYY-MM-DD') AS visit_date,
-       COUNT(DISTINCT fe.person_id)::int AS total_visitors,
+    `WITH pdv_camera_priority AS (
+       -- For each PDV, determine if face cameras have data for each day
+       SELECT
+         c.pdv_id,
+         fe.detected_at::date AS d,
+         bool_or(c.camera_purpose = 'face') AS has_face_cameras
+       FROM face_embeddings fe
+       JOIN cameras c ON c.id = fe.camera_id
+       WHERE fe.person_id IS NOT NULL
+         AND fe.detected_at::date >= $1
+         AND fe.detected_at::date <= $2
+         AND c.capture_face = true
+         ${pdvFilter}
+       GROUP BY c.pdv_id, fe.detected_at::date
+     ),
+     pdv_counts AS (
+       -- Count distinct persons per PDV per day, respecting camera priority
+       SELECT
+         p.id AS pdv_id,
+         p.name AS pdv_name,
+         fe.detected_at::date AS d,
+         COUNT(DISTINCT fe.person_id)::int AS pdv_count
+       FROM face_embeddings fe
+       JOIN cameras c ON c.id = fe.camera_id
+       JOIN pdvs p ON p.id = c.pdv_id
+       JOIN pdv_camera_priority pcp ON pcp.pdv_id = c.pdv_id AND pcp.d = fe.detected_at::date
+       WHERE fe.person_id IS NOT NULL
+         AND fe.detected_at::date >= $1
+         AND fe.detected_at::date <= $2
+         AND c.capture_face = true
+         ${pdvFilter}
+         -- If PDV has face cameras with data, only count from face cameras
+         -- Otherwise, count from all cameras with capture_face=true
+         AND (
+           (pcp.has_face_cameras = true AND c.camera_purpose = 'face')
+           OR
+           (pcp.has_face_cameras = false)
+         )
+       GROUP BY p.id, p.name, fe.detected_at::date
+     )
+     SELECT
+       to_char(pc.d, 'YYYY-MM-DD') AS visit_date,
+       SUM(pc.pdv_count)::int AS total_visitors,
        json_agg(DISTINCT jsonb_build_object(
-         'pdv_id', p.id,
-         'pdv_name', p.name,
-         'count', pdv_counts.pdv_count
+         'pdv_id', pc.pdv_id,
+         'pdv_name', pc.pdv_name,
+         'count', pc.pdv_count
        )) AS by_pdv
-     FROM face_embeddings fe
-     JOIN cameras c ON c.id = fe.camera_id
-     JOIN pdvs p ON p.id = c.pdv_id
-     JOIN (
-       SELECT p2.id AS pdv_id, fe2.detected_at::date AS d,
-              COUNT(DISTINCT fe2.person_id)::int AS pdv_count
-       FROM face_embeddings fe2
-       JOIN cameras c2 ON c2.id = fe2.camera_id
-       JOIN pdvs p2 ON p2.id = c2.pdv_id
-       WHERE fe2.person_id IS NOT NULL
-         AND fe2.detected_at::date >= $1
-         AND fe2.detected_at::date <= $2
-       GROUP BY p2.id, fe2.detected_at::date
-     ) pdv_counts ON pdv_counts.pdv_id = p.id AND pdv_counts.d = fe.detected_at::date
-     WHERE fe.person_id IS NOT NULL
-       AND fe.detected_at::date >= $1
-       AND fe.detected_at::date <= $2
-       ${pdvFilter}
-     GROUP BY fe.detected_at::date
-     ORDER BY fe.detected_at::date DESC`,
+     FROM pdv_counts pc
+     GROUP BY pc.d
+     ORDER BY pc.d DESC`,
     params
   );
 
