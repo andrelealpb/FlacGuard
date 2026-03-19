@@ -92,6 +92,70 @@ function getDiskUsage() {
   } catch { return []; }
 }
 
+// Helper: detailed disk breakdown using du for key directories
+function getDiskBreakdown() {
+  const breakdown = [];
+  try {
+    // Docker images/containers/volumes
+    const dockerDf = execSync("docker system df --format '{{.Type}}\\t{{.Size}}\\t{{.Reclaimable}}' 2>/dev/null", { encoding: 'utf8', timeout: 15000 });
+    for (const line of dockerDf.trim().split('\n').filter(Boolean)) {
+      const [type, size, reclaimable] = line.split('\t');
+      breakdown.push({ name: `Docker ${type}`, size, reclaimable: reclaimable || '0B', category: 'docker' });
+    }
+  } catch {
+    // Docker not accessible from inside container - try via host paths
+  }
+
+  // Check common large directories
+  const dirs = [
+    { path: '/var/log', name: 'Logs do sistema' },
+    { path: '/var/lib/docker', name: 'Docker (total)' },
+    { path: '/var/lib/docker/overlay2', name: 'Docker layers' },
+    { path: '/var/lib/docker/volumes', name: 'Docker volumes' },
+    { path: '/var/cache', name: 'Cache do sistema' },
+    { path: '/tmp', name: 'Arquivos temporários' },
+    { path: '/var/lib/apt', name: 'Pacotes APT' },
+    { path: '/usr', name: 'Sistema (/usr)' },
+    { path: '/opt', name: 'Aplicações (/opt)' },
+    { path: '/snap', name: 'Snap packages' },
+  ];
+
+  for (const dir of dirs) {
+    try {
+      const out = execSync(`du -sb ${dir.path} 2>/dev/null`, { encoding: 'utf8', timeout: 10000 });
+      const bytes = parseInt(out.trim().split('\t')[0], 10);
+      if (bytes > 0) {
+        breakdown.push({ name: dir.name, path: dir.path, bytes, category: 'system' });
+      }
+    } catch {
+      // skip inaccessible dirs
+    }
+  }
+
+  return breakdown;
+}
+
+// Helper: get Docker disk usage summary
+function getDockerDiskUsage() {
+  try {
+    const out = execSync("docker system df -v --format json 2>/dev/null", { encoding: 'utf8', timeout: 15000 });
+    // docker system df -v outputs JSON lines
+    const lines = out.trim().split('\n').filter(Boolean);
+    const images = [];
+    const containers = [];
+    for (const line of lines) {
+      try {
+        const item = JSON.parse(line);
+        if (item.Repository) images.push(item);
+        if (item.Container) containers.push(item);
+      } catch { /* skip non-json */ }
+    }
+    return { images, containers };
+  } catch {
+    return null;
+  }
+}
+
 // Helper: system uptime
 function getUptime() {
   try {
@@ -111,6 +175,29 @@ function getLoadAverage() {
 
 // Store previous CPU reading for delta calculation
 let prevCpu = null;
+
+// Cache disk breakdown (expensive operation - cache for 60s)
+let diskBreakdownCache = null;
+let diskBreakdownCacheTime = 0;
+function getDiskBreakdownCached() {
+  const now = Date.now();
+  if (!diskBreakdownCache || now - diskBreakdownCacheTime > 60000) {
+    diskBreakdownCache = getDiskBreakdown();
+    diskBreakdownCacheTime = now;
+  }
+  return diskBreakdownCache;
+}
+
+let dockerDiskCache = null;
+let dockerDiskCacheTime = 0;
+function getDockerDiskCached() {
+  const now = Date.now();
+  if (!dockerDiskCache || now - dockerDiskCacheTime > 60000) {
+    dockerDiskCache = getDockerDiskUsage();
+    dockerDiskCacheTime = now;
+  }
+  return dockerDiskCache;
+}
 
 // GET /api/monitor/stats — Full system stats
 router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
@@ -182,6 +269,10 @@ router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
       services.push({ name: 'postgresql', status: 'running', ports: '5432' });
     }
 
+    // Disk breakdown (only calculate on first call and cache for 60s)
+    let diskBreakdown = getDiskBreakdownCached();
+    let dockerDisk = getDockerDiskCached();
+
     res.json({
       cpu: { percent: cpuPercent, ...load },
       memory,
@@ -200,7 +291,67 @@ router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
       faces: { total_embeddings: faceStats[0].total },
       cameras: camStats.reduce((acc, r) => { acc[r.status] = r.count; return acc; }, {}),
       services,
+      disk_breakdown: diskBreakdown,
+      docker_disk: dockerDisk,
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/monitor/cleanup — Run Docker cleanup to free disk space
+router.post('/cleanup', authenticate, authorize('admin'), async (_req, res) => {
+  try {
+    const results = [];
+
+    // Prune stopped containers
+    try {
+      const containers = execSync('docker container prune -f 2>&1', { encoding: 'utf8', timeout: 30000 });
+      results.push({ action: 'Containers parados removidos', output: containers.trim() });
+    } catch (e) { results.push({ action: 'Container prune', error: e.message }); }
+
+    // Prune dangling images
+    try {
+      const images = execSync('docker image prune -f 2>&1', { encoding: 'utf8', timeout: 30000 });
+      results.push({ action: 'Imagens não utilizadas removidas', output: images.trim() });
+    } catch (e) { results.push({ action: 'Image prune', error: e.message }); }
+
+    // Prune build cache
+    try {
+      const buildCache = execSync('docker builder prune -f 2>&1', { encoding: 'utf8', timeout: 60000 });
+      results.push({ action: 'Cache de build removido', output: buildCache.trim() });
+    } catch (e) { results.push({ action: 'Builder prune', error: e.message }); }
+
+    // Prune unused volumes (NOT all - only dangling)
+    try {
+      const volumes = execSync('docker volume prune -f 2>&1', { encoding: 'utf8', timeout: 30000 });
+      results.push({ action: 'Volumes não utilizados removidos', output: volumes.trim() });
+    } catch (e) { results.push({ action: 'Volume prune', error: e.message }); }
+
+    // Clear old log files
+    try {
+      const logs = execSync('find /var/log -name "*.gz" -o -name "*.old" -o -name "*.1" 2>/dev/null | head -50', { encoding: 'utf8', timeout: 10000 });
+      if (logs.trim()) {
+        execSync('find /var/log -name "*.gz" -o -name "*.old" -o -name "*.1" -delete 2>/dev/null || true', { encoding: 'utf8', timeout: 10000 });
+        const count = logs.trim().split('\n').length;
+        results.push({ action: `${count} logs antigos removidos`, output: 'OK' });
+      }
+    } catch { /* ignore */ }
+
+    // Clear APT cache
+    try {
+      execSync('apt-get clean 2>/dev/null || true', { encoding: 'utf8', timeout: 15000 });
+      results.push({ action: 'Cache APT limpo', output: 'OK' });
+    } catch { /* ignore */ }
+
+    // Invalidate disk caches
+    diskBreakdownCache = null;
+    dockerDiskCache = null;
+
+    // Get updated disk info
+    const disks = getDiskUsage();
+
+    res.json({ success: true, results, disks });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

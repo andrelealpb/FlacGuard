@@ -67,7 +67,23 @@ app.get('/api/deploy-status', (_req, res) => {
     try {
       if (existsSync(p)) {
         const data = readFileSync(p, 'utf-8');
-        return res.json(JSON.parse(data));
+        const parsed = JSON.parse(data);
+
+        // If status is "deploying" for more than 10 minutes, mark as failed (stuck)
+        if (parsed.status === 'deploying' && parsed.started_at) {
+          const startedAt = new Date(parsed.started_at).getTime();
+          const elapsed = Date.now() - startedAt;
+          const tenMinutes = 10 * 60 * 1000;
+          if (elapsed > tenMinutes) {
+            parsed.status = 'failed';
+            parsed.message = `Deploy travou (iniciou há ${Math.round(elapsed / 60000)} minutos sem finalizar). Execute manualmente no servidor.`;
+            parsed.stuck = true;
+          } else {
+            parsed.elapsed_seconds = Math.round(elapsed / 1000);
+          }
+        }
+
+        return res.json(parsed);
       }
     } catch {
       // try next
