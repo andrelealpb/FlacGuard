@@ -1,6 +1,15 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../context/AuthContext";
 
+interface DiskBreakdownItem {
+  name: string;
+  path?: string;
+  bytes?: number;
+  size?: string;
+  reclaimable?: string;
+  category: string;
+}
+
 interface SystemStats {
   cpu: { percent: number; load1: number; load5: number; load15: number };
   memory: { total: number; used: number; available: number; cached: number; buffers: number; swap_total: number; swap_used: number } | null;
@@ -12,6 +21,8 @@ interface SystemStats {
   faces: { total_embeddings: number };
   cameras: Record<string, number>;
   services: { name: string; status: string; ports: string }[];
+  disk_breakdown?: DiskBreakdownItem[];
+  docker_disk?: { images: any[]; containers: any[] } | null;
 }
 
 function formatBytes(b: number): string {
@@ -71,6 +82,8 @@ function Monitoring() {
   const { apiFetch } = useAuth();
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [error, setError] = useState("");
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanResult, setCleanResult] = useState<{ success: boolean; results: any[] } | null>(null);
   const cpuHistory = useRef<number[]>([]);
   const memHistory = useRef<number[]>([]);
   const netRxHistory = useRef<number[]>([]);
@@ -108,6 +121,24 @@ function Monitoring() {
       forceUpdate(n => n + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao carregar");
+    }
+  };
+
+  const runCleanup = async () => {
+    if (!confirm("Isso vai remover imagens Docker não utilizadas, containers parados, cache de build e logs antigos. Continuar?")) return;
+    setCleaning(true);
+    setCleanResult(null);
+    try {
+      const res = await apiFetch("/api/monitor/cleanup", { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setCleanResult(data);
+      // Refresh stats after cleanup
+      setTimeout(fetchStats, 2000);
+    } catch (err) {
+      setCleanResult({ success: false, results: [{ action: "Erro", error: err instanceof Error ? err.message : "Falha" }] });
+    } finally {
+      setCleaning(false);
     }
   };
 
@@ -201,15 +232,87 @@ function Monitoring() {
 
         {/* Disk */}
         <div style={card}>
-          <div style={{ fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.3rem" }}>Disco</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.3rem" }}>
+            <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>Disco</div>
+            <button
+              onClick={runCleanup}
+              disabled={cleaning}
+              style={{
+                fontSize: "0.65rem", padding: "0.2rem 0.5rem", borderRadius: "4px",
+                border: "1px solid #e65100", background: cleaning ? "#ccc" : "#fff3e0",
+                color: "#e65100", cursor: cleaning ? "not-allowed" : "pointer", fontWeight: 600,
+              }}
+            >
+              {cleaning ? "Limpando..." : "Limpar Docker"}
+            </button>
+          </div>
           {stats.disks.map((d) => (
             <Gauge key={d.mount} value={d.used} max={d.total} label={d.mount} color="#e65100"
               detail={`${formatBytes(d.used)} / ${formatBytes(d.total)}`} />
           ))}
-          <div style={{ fontSize: "0.65rem", color: "#999", marginTop: "0.3rem" }}>
+          <div style={{ fontSize: "0.65rem", color: "#999", marginTop: "0.3rem", marginBottom: "0.5rem" }}>
             Gravações: {formatBytes(stats.recordings.total_size)} ({stats.recordings.total} arquivos)
             {" | "}DB: {formatBytes(stats.database.size)}
           </div>
+
+          {/* Disk breakdown */}
+          {stats.disk_breakdown && stats.disk_breakdown.length > 0 && (
+            <div style={{ borderTop: "1px solid #eee", paddingTop: "0.5rem" }}>
+              <div style={{ fontSize: "0.7rem", fontWeight: 600, marginBottom: "0.3rem", color: "#555" }}>
+                Detalhamento do uso de disco
+              </div>
+              <table style={{ width: "100%", fontSize: "0.65rem", borderCollapse: "collapse" }}>
+                <tbody>
+                  {stats.disk_breakdown
+                    .filter((d: DiskBreakdownItem) => d.bytes && d.bytes > 10 * 1024 * 1024) // Only show > 10MB
+                    .sort((a: DiskBreakdownItem, b: DiskBreakdownItem) => (b.bytes || 0) - (a.bytes || 0))
+                    .map((d: DiskBreakdownItem, i: number) => {
+                      const diskTotal = stats.disks[0]?.total || 1;
+                      const pct = d.bytes ? ((d.bytes / diskTotal) * 100).toFixed(1) : '—';
+                      return (
+                        <tr key={i} style={{ borderBottom: "1px solid #f5f5f5" }}>
+                          <td style={{ padding: "0.2rem 0", color: "#333" }}>{d.name}</td>
+                          <td style={{ padding: "0.2rem 0", textAlign: "right", fontWeight: 600, color: "#e65100" }}>
+                            {d.bytes ? formatBytes(d.bytes) : d.size || '—'}
+                          </td>
+                          <td style={{ padding: "0.2rem 0 0.2rem 0.5rem", textAlign: "right", color: "#999" }}>
+                            {pct}%
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+              {stats.disk_breakdown.filter((d: DiskBreakdownItem) => d.category === 'docker' && d.reclaimable).length > 0 && (
+                <div style={{ fontSize: "0.6rem", color: "#e65100", marginTop: "0.3rem", fontStyle: "italic" }}>
+                  Docker recuperável: {stats.disk_breakdown.filter((d: DiskBreakdownItem) => d.category === 'docker').map((d: DiskBreakdownItem) => `${d.name}: ${d.reclaimable}`).join(' | ')}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Cleanup results */}
+          {cleanResult && (
+            <div style={{
+              marginTop: "0.5rem", padding: "0.5rem", borderRadius: "4px",
+              background: cleanResult.success ? "#e8f5e9" : "#ffebee",
+              fontSize: "0.65rem",
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: "0.2rem" }}>
+                {cleanResult.success ? "Limpeza concluída" : "Limpeza com erros"}
+              </div>
+              {cleanResult.results.map((r: any, i: number) => (
+                <div key={i} style={{ color: r.error ? "#c62828" : "#2e7d32" }}>
+                  {r.action}{r.output && r.output !== 'OK' ? `: ${r.output.slice(0, 100)}` : ''}
+                  {r.error ? `: ${r.error}` : ''}
+                </div>
+              ))}
+              <button onClick={() => setCleanResult(null)} style={{
+                marginTop: "0.3rem", fontSize: "0.6rem", border: "none",
+                background: "transparent", color: "#999", cursor: "pointer", textDecoration: "underline",
+              }}>fechar</button>
+            </div>
+          )}
         </div>
 
         {/* Network */}
