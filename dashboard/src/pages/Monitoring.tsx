@@ -264,15 +264,27 @@ function Monitoring() {
               <table style={{ width: "100%", fontSize: "0.65rem", borderCollapse: "collapse" }}>
                 <tbody>
                   {stats.disk_breakdown
-                    .filter((d: DiskBreakdownItem) => d.bytes && d.bytes > 10 * 1024 * 1024) // Only show > 10MB
-                    .sort((a: DiskBreakdownItem, b: DiskBreakdownItem) => (b.bytes || 0) - (a.bytes || 0))
+                    .filter((d: DiskBreakdownItem) => {
+                      // Show docker items with size string, and system items > 10MB
+                      if (d.category === 'docker') return !!d.size;
+                      return d.bytes && d.bytes > 10 * 1024 * 1024;
+                    })
+                    // Keep backend order: Docker group first, then other dirs
                     .map((d: DiskBreakdownItem, i: number) => {
                       const diskTotal = stats.disks[0]?.total || 1;
                       const pct = d.bytes ? ((d.bytes / diskTotal) * 100).toFixed(1) : '—';
+                      const isChild = d.name.startsWith('  ');
                       return (
                         <tr key={i} style={{ borderBottom: "1px solid #f5f5f5" }}>
-                          <td style={{ padding: "0.2rem 0", color: "#333" }}>{d.name}</td>
-                          <td style={{ padding: "0.2rem 0", textAlign: "right", fontWeight: 600, color: "#e65100" }}>
+                          <td style={{
+                            padding: "0.2rem 0",
+                            color: isChild ? "#777" : "#333",
+                            paddingLeft: isChild ? "0.8rem" : "0",
+                            fontSize: isChild ? "0.6rem" : undefined,
+                          }}>
+                            {d.name.trim()}
+                          </td>
+                          <td style={{ padding: "0.2rem 0", textAlign: "right", fontWeight: 600, color: isChild ? "#999" : "#e65100" }}>
                             {d.bytes ? formatBytes(d.bytes) : d.size || '—'}
                           </td>
                           <td style={{ padding: "0.2rem 0 0.2rem 0.5rem", textAlign: "right", color: "#999" }}>

@@ -30,6 +30,8 @@ services:
     volumes:
       - recordings:/data/recordings
       - ./deploy-status.json:/app/deploy-status.json:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
     depends_on:
       db:
         condition: service_healthy
