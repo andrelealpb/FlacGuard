@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -9,11 +10,16 @@ WORKDIR /app
 # Limit compilation parallelism to avoid OOM during insightface Cython build
 ENV MAKEFLAGS="-j1" MAX_JOBS=1
 
-# Install insightface first (slow Cython compilation) as separate layer for caching
+# Install heavy deps first as separate cached layer (rarely changes)
+# BuildKit cache mount keeps pip downloads across rebuilds even if layer cache is lost
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install cython numpy==1.26.4 \
+  && pip install --no-build-isolation insightface==0.7.3
+
+# Install remaining requirements (changes more often)
 COPY requirements.txt .
-RUN pip install --no-cache-dir cython numpy==1.26.4 \
-  && pip install --no-cache-dir --no-build-isolation insightface==0.7.3 \
-  && pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 # Remove build tools to reduce image size
 RUN apt-get purge -y --auto-remove build-essential \

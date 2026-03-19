@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../context/AuthContext";
 
 interface PulseConfig {
@@ -35,6 +35,8 @@ interface DeployStatus {
   finished_at?: string;
   built_at?: string;
   message?: string;
+  elapsed_seconds?: number;
+  stuck?: boolean;
   build?: {
     timestamp: string;
     services: BuildServiceInfo[];
@@ -63,12 +65,46 @@ function Settings() {
   const [savingServer, setSavingServer] = useState(false);
   const [serverMsg, setServerMsg] = useState<{ type: "ok" | "error"; text: string } | null>(null);
 
+  const [deployElapsed, setDeployElapsed] = useState(0);
+  const deployTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const deployPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const loadDeploy = () => {
     apiFetch("/api/deploy-status")
       .then((r) => r.json())
-      .then(setDeploy)
+      .then((data: DeployStatus) => {
+        setDeploy(data);
+        // Start/stop timer based on deploy status
+        if (data.status === "deploying" && data.elapsed_seconds != null) {
+          setDeployElapsed(data.elapsed_seconds);
+        }
+      })
       .catch(console.error);
   };
+
+  // Auto-refresh and live timer when deploying
+  useEffect(() => {
+    if (deploy?.status === "deploying") {
+      // Live timer - tick every second
+      if (!deployTimerRef.current) {
+        deployTimerRef.current = setInterval(() => {
+          setDeployElapsed((prev) => prev + 1);
+        }, 1000);
+      }
+      // Poll deploy status every 10s
+      if (!deployPollRef.current) {
+        deployPollRef.current = setInterval(loadDeploy, 10000);
+      }
+    } else {
+      // Not deploying - clear timers
+      if (deployTimerRef.current) { clearInterval(deployTimerRef.current); deployTimerRef.current = null; }
+      if (deployPollRef.current) { clearInterval(deployPollRef.current); deployPollRef.current = null; }
+    }
+    return () => {
+      if (deployTimerRef.current) clearInterval(deployTimerRef.current);
+      if (deployPollRef.current) clearInterval(deployPollRef.current);
+    };
+  }, [deploy?.status]);
 
   useEffect(() => {
     loadDeploy();
@@ -318,8 +354,8 @@ function Settings() {
                       }}
                     >
                       {deploy.status === "success" || deploy.status === "ok" ? "OK"
-                        : deploy.status === "deploying" ? "Deployando..."
-                        : deploy.status === "failed" ? "Falhou"
+                        : deploy.status === "deploying" ? `Deployando... ${Math.floor(deployElapsed / 60)}m ${deployElapsed % 60}s`
+                        : deploy.status === "failed" ? (deploy.stuck ? "Travou" : "Falhou")
                         : deploy.status === "degraded" ? "Degradado"
                         : deploy.status}
                     </span>
@@ -356,10 +392,22 @@ function Settings() {
                     <td><code style={{ fontSize: "0.8rem" }}>{deploy.branch}</code></td>
                   </tr>
                 )}
+                {deploy.started_at && deploy.status === "deploying" && (
+                  <tr>
+                    <td style={{ padding: "0.4rem 0", fontWeight: 600 }}>Iniciou</td>
+                    <td>{new Date(deploy.started_at).toLocaleString("pt-BR")}</td>
+                  </tr>
+                )}
                 {(deploy.finished_at || deploy.built_at) && (
                   <tr>
                     <td style={{ padding: "0.4rem 0", fontWeight: 600 }}>Quando</td>
-                    <td>{new Date(deploy.finished_at || deploy.built_at!).toLocaleString("pt-BR")}</td>
+                    <td>
+                      {new Date(deploy.finished_at || deploy.built_at!).toLocaleString("pt-BR")}
+                      {deploy.started_at && deploy.finished_at && (() => {
+                        const dur = Math.round((new Date(deploy.finished_at).getTime() - new Date(deploy.started_at).getTime()) / 1000);
+                        return <span style={{ color: "#999", marginLeft: "0.5rem" }}>({Math.floor(dur / 60)}m {dur % 60}s)</span>;
+                      })()}
+                    </td>
                   </tr>
                 )}
                 {deploy.message && (
