@@ -15,6 +15,8 @@ interface Camera {
   stream_key: string;
   model: string;
   camera_group: string;
+  camera_purpose: string;
+  capture_face: boolean;
   location_description: string | null;
   status: string;
   pdv_id: string;
@@ -47,6 +49,8 @@ interface CameraForm {
   retention_days: number;
   motion_sensitivity: number;
   storage_quota_gb: string; // string for input handling, "" = null/unlimited
+  camera_purpose: string;
+  capture_face: boolean;
 }
 
 interface DiskUsageEntry {
@@ -71,6 +75,8 @@ const emptyForm: CameraForm = {
   retention_days: 21,
   motion_sensitivity: 5,
   storage_quota_gb: "",
+  camera_purpose: "environment",
+  capture_face: true,
 };
 
 function formatBytes(bytes: number) {
@@ -176,6 +182,26 @@ function CameraInfoModal({ camera, onClose }: { camera: Camera; onClose: () => v
             <div style={sectionTitle}>PDV</div>
             <div style={fieldStyle}>
               <span style={{ flex: 1 }}>{camera.pdv_code ? `[${camera.pdv_code}] ` : ""}{camera.pdv_name}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Camera purpose & face capture */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem 1rem", marginTop: "0.5rem" }}>
+          <div>
+            <div style={sectionTitle}>Tipo</div>
+            <div style={fieldStyle}>
+              <span style={{ flex: 1 }}>
+                {camera.camera_purpose === "face" ? "Captura de face" : "Ambiente"}
+              </span>
+            </div>
+          </div>
+          <div>
+            <div style={sectionTitle}>Detecção facial</div>
+            <div style={fieldStyle}>
+              <span style={{ flex: 1, color: camera.capture_face ? "#2e7d32" : "#999" }}>
+                {camera.capture_face ? "Ativa" : "Desativada"}
+              </span>
             </div>
           </div>
         </div>
@@ -592,6 +618,8 @@ function Cameras() {
       retention_days: camera.retention_days || 21,
       motion_sensitivity: camera.motion_sensitivity || 5,
       storage_quota_gb: camera.storage_quota_gb != null ? String(camera.storage_quota_gb) : "",
+      camera_purpose: camera.camera_purpose || "environment",
+      capture_face: camera.capture_face !== undefined ? camera.capture_face : true,
     });
     setEditingId(camera.id);
     setShowForm(true);
@@ -815,6 +843,50 @@ function Cameras() {
                 )}
               </div>
 
+              {/* Camera Purpose + Face Capture */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+                <div>
+                  <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.25rem" }}>
+                    Tipo da câmera
+                  </label>
+                  <select
+                    value={form.camera_purpose}
+                    onChange={(e) => setForm({ ...form, camera_purpose: e.target.value })}
+                    style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", border: "1px solid #ccc" }}
+                  >
+                    <option value="environment">Ambiente</option>
+                    <option value="face">Captura de face</option>
+                  </select>
+                  <div style={{ fontSize: "0.7rem", color: "#666", marginTop: "0.2rem" }}>
+                    {form.camera_purpose === "face"
+                      ? "Posicionada para captura frontal de rostos. Prioridade na contagem de visitantes."
+                      : "Câmera de ambiente / visão geral do PDV."}
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.25rem", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={form.capture_face}
+                      onChange={(e) => setForm({ ...form, capture_face: e.target.checked })}
+                      style={{ accentColor: "#1a1a2e" }}
+                    />
+                    Capturar faces
+                  </label>
+                  <div style={{ fontSize: "0.7rem", color: "#666", marginTop: "0.2rem" }}>
+                    {form.capture_face
+                      ? "Detecção facial ativa. Usada para contagem de visitantes e busca."
+                      : "Detecção facial desativada. Não contribui para contagem de visitantes."}
+                  </div>
+                  {form.camera_purpose === "environment" && form.capture_face && (
+                    <div style={{ fontSize: "0.7rem", color: "#1565c0", marginTop: "0.15rem" }}>
+                      Câmera de ambiente com captura de face ativa (fallback para contagem se não houver câmera face no PDV).
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* Recording Mode + Retention + Sensitivity + Quota row */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "0.75rem" }}>
                 {/* Recording Mode */}
@@ -946,6 +1018,7 @@ function Cameras() {
                 <th style={{ padding: "0.75rem 1rem" }}>Status</th>
                 <th style={{ padding: "0.75rem 1rem" }}>Nome</th>
                 <th style={{ padding: "0.75rem 1rem" }}>Modelo</th>
+                <th style={{ padding: "0.75rem 1rem" }}>Tipo</th>
                 <th style={{ padding: "0.75rem 1rem" }}>PDV</th>
                 <th style={{ padding: "0.75rem 1rem" }}>Gravação</th>
                 <th style={{ padding: "0.75rem 1rem" }}>Retenção</th>
@@ -967,6 +1040,28 @@ function Cameras() {
                     <td style={{ padding: "0.6rem 1rem" }}>
                       <span style={groupBadge(cam.camera_group)}>{cam.camera_group.toUpperCase()}</span>
                       {" "}{cam.model}
+                    </td>
+                    <td style={{ padding: "0.6rem 1rem" }}>
+                      <span style={{
+                        padding: "0.15rem 0.4rem",
+                        borderRadius: "3px",
+                        fontSize: "0.7rem",
+                        fontWeight: 600,
+                        background: cam.camera_purpose === "face" ? "#e8f5e9" : "#f5f5f5",
+                        color: cam.camera_purpose === "face" ? "#2e7d32" : "#666",
+                      }}>
+                        {cam.camera_purpose === "face" ? "Face" : "Ambiente"}
+                      </span>
+                      {cam.capture_face && cam.camera_purpose !== "face" && (
+                        <span style={{ fontSize: "0.6rem", color: "#1565c0", marginLeft: "0.3rem" }}>
+                          +face
+                        </span>
+                      )}
+                      {!cam.capture_face && (
+                        <span style={{ fontSize: "0.6rem", color: "#999", marginLeft: "0.3rem" }}>
+                          sem face
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: "0.6rem 1rem" }}>
                       {cam.pdv_code ? `[${cam.pdv_code}] ` : ""}{cam.pdv_name}

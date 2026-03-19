@@ -34,6 +34,9 @@ CREATE TABLE cameras (
     CHECK (model IN ('iM3 C', 'iM5 SC', 'iMX', 'IC3', 'IC5')),
   camera_group         VARCHAR(10)  NOT NULL DEFAULT 'im'
     CHECK (camera_group IN ('im', 'ic')),
+  camera_purpose       VARCHAR(20)  NOT NULL DEFAULT 'environment'
+    CHECK (camera_purpose IN ('environment', 'face')),
+  capture_face         BOOLEAN      NOT NULL DEFAULT true,
   location_description VARCHAR(500),
   status               VARCHAR(20)  NOT NULL DEFAULT 'offline'
     CHECK (status IN ('online', 'offline', 'error')),

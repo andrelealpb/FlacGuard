@@ -380,8 +380,10 @@ async function processCamera(camera) {
     }
 
     // Face detection: run async (non-blocking) when face service is available
+    // Only process faces if camera has capture_face enabled
     // Process every frame when motion is active and person confirmed, or every ~5th frame when idle
-    if (faceServiceAvailable) {
+    const shouldCaptureFace = camera.capture_face !== false;
+    if (faceServiceAvailable && shouldCaptureFace) {
       const shouldProcess = (state.motionActive && state.personConfirmed) || Math.random() < 0.2;
       if (shouldProcess) {
         processFaces(camera, hlsUrl).catch(() => {});
@@ -410,7 +412,8 @@ async function motionDetectionLoop() {
   try {
     // Get all online cameras with motion detection enabled or continuous recording
     const { rows: cameras } = await pool.query(
-      `SELECT id, name, stream_key, recording_mode, motion_sensitivity, status
+      `SELECT id, name, stream_key, recording_mode, motion_sensitivity, status,
+              camera_purpose, capture_face
        FROM cameras WHERE status = 'online'`
     );
 
@@ -424,8 +427,8 @@ async function motionDetectionLoop() {
           if (camera.recording_mode === 'motion') {
             return processCamera(camera);
           }
-          // Face detection only for continuous-mode cameras (when face service is up)
-          if (faceServiceAvailable) {
+          // Face detection only for continuous-mode cameras with capture_face enabled
+          if (faceServiceAvailable && camera.capture_face !== false) {
             const hlsUrl = `http://nginx-rtmp:8080/hls/${camera.stream_key}.m3u8`;
             return processFaces(camera, hlsUrl).catch(() => {});
           }
