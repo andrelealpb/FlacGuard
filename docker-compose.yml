@@ -35,6 +35,7 @@ services:
       - S3_RECORDINGS_PREFIX=${S3_RECORDINGS_PREFIX:-recordings}
       - S3_FACES_PREFIX=${S3_FACES_PREFIX:-faces}
       - S3_WATCHLIST_PREFIX=${S3_WATCHLIST_PREFIX:-watchlist}
+      - S3_QUOTA_GB=${S3_QUOTA_GB:-250}
     volumes:
       - recordings:/data/recordings
       - ./deploy-status.json:/app/deploy-status.json:ro
