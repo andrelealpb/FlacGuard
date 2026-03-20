@@ -36,8 +36,9 @@ async function getPublicSettings() {
   return _publicSettingsCache;
 }
 
-export function generateStreamKey() {
-  return crypto.randomBytes(24).toString('base64url');
+export function generateStreamKey(tenantSlug = '') {
+  const random = crypto.randomBytes(16).toString('base64url');
+  return tenantSlug ? `${tenantSlug}_${random}` : random;
 }
 
 // Internal URL (used by recorder/nginx within Docker)

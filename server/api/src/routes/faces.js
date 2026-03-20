@@ -10,6 +10,7 @@ import {
 } from '../services/face-recognition.js';
 import { writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { getTenantId } from '../services/tenant.js';
 
 const router = Router();
 const WATCHLIST_DIR = '/data/recordings/watchlist';
@@ -149,12 +150,15 @@ router.get('/status', authenticate, async (_req, res) => {
 // ─── Watchlist ───
 
 // GET /api/faces/watchlist — List all watchlist entries
-router.get('/watchlist', authenticate, authorize('admin'), async (_req, res) => {
+router.get('/watchlist', authenticate, authorize('admin'), async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { rows } = await pool.query(
       `SELECT id, name, description, photo_path, alert_type, is_active, created_at, updated_at
        FROM face_watchlist
-       ORDER BY created_at DESC`
+       WHERE tenant_id = $1
+       ORDER BY created_at DESC`,
+      [tenantId]
     );
 
     const entries = rows.map((r) => ({
@@ -189,12 +193,13 @@ router.post('/watchlist', authenticate, authorize('admin'), async (req, res) => 
 
     const embeddingStr = `[${embedding.join(',')}]`;
     const userId = req.auth?.user?.id || null;
+    const tenantId = getTenantId(req);
 
     const { rows } = await pool.query(
-      `INSERT INTO face_watchlist (name, description, photo_path, embedding, alert_type, created_by)
-       VALUES ($1, $2, $3, $4::vector, $5, $6)
+      `INSERT INTO face_watchlist (name, description, photo_path, embedding, alert_type, created_by, tenant_id)
+       VALUES ($1, $2, $3, $4::vector, $5, $6, $7)
        RETURNING id, name, description, alert_type, created_at`,
-      [name, description || null, photoPath, embeddingStr, alert_type || 'suspect', userId]
+      [name, description || null, photoPath, embeddingStr, alert_type || 'suspect', userId, tenantId]
     );
 
     console.log(`[Face] Watchlist entry added: "${name}" (${alert_type || 'suspect'}) — confidence ${(confidence * 100).toFixed(1)}%`);
@@ -242,13 +247,14 @@ router.post('/watchlist/from-appearance', authenticate, authorize('admin'), asyn
     // Re-serialize embedding from pgvector format
     const embeddingStr = typeof embedding === 'string' ? embedding : `[${embedding.join(',')}]`;
     const userId = req.auth?.user?.id || null;
+    const tenantId = getTenantId(req);
     const entryName = name || `Suspeito ${new Date().toLocaleDateString('pt-BR')}`;
 
     const { rows: inserted } = await pool.query(
-      `INSERT INTO face_watchlist (name, description, photo_path, embedding, alert_type, created_by)
-       VALUES ($1, $2, $3, $4::vector, $5, $6)
+      `INSERT INTO face_watchlist (name, description, photo_path, embedding, alert_type, created_by, tenant_id)
+       VALUES ($1, $2, $3, $4::vector, $5, $6, $7)
        RETURNING id, name, description, alert_type, created_at`,
-      [entryName, description || null, photoPath, embeddingStr, alert_type || 'suspect', userId]
+      [entryName, description || null, photoPath, embeddingStr, alert_type || 'suspect', userId, tenantId]
     );
 
     console.log(`[Face] Watchlist entry added from appearance: "${entryName}" (${alert_type || 'suspect'}) — confidence ${(confidence * 100).toFixed(1)}%`);
@@ -266,6 +272,7 @@ router.post('/watchlist/from-appearance', authenticate, authorize('admin'), asyn
 // PATCH /api/faces/watchlist/:id — Update watchlist entry
 router.patch('/watchlist/:id', authenticate, authorize('admin'), async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { id } = req.params;
     const { name, description, alert_type, is_active } = req.body;
 
@@ -284,9 +291,10 @@ router.patch('/watchlist/:id', authenticate, authorize('admin'), async (req, res
 
     updates.push(`updated_at = now()`);
     values.push(id);
+    values.push(tenantId);
 
     const { rows } = await pool.query(
-      `UPDATE face_watchlist SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
+      `UPDATE face_watchlist SET ${updates.join(', ')} WHERE id = $${idx} AND tenant_id = $${idx + 1} RETURNING *`,
       values
     );
 
@@ -303,11 +311,12 @@ router.patch('/watchlist/:id', authenticate, authorize('admin'), async (req, res
 // DELETE /api/faces/watchlist/:id — Remove from watchlist
 router.delete('/watchlist/:id', authenticate, authorize('admin'), async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { id } = req.params;
 
     const { rows } = await pool.query(
-      'DELETE FROM face_watchlist WHERE id = $1 RETURNING id, photo_path',
-      [id]
+      'DELETE FROM face_watchlist WHERE id = $1 AND tenant_id = $2 RETURNING id, photo_path',
+      [id, tenantId]
     );
 
     if (rows.length === 0) {
@@ -330,6 +339,7 @@ router.delete('/watchlist/:id', authenticate, authorize('admin'), async (req, re
 // GET /api/faces/alerts — List face alerts
 router.get('/alerts', authenticate, authorize('admin'), async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { acknowledged, limit = 50, offset = 0 } = req.query;
 
     let query = `
@@ -339,12 +349,13 @@ router.get('/alerts', authenticate, authorize('admin'), async (req, res) => {
       JOIN face_watchlist fw ON fw.id = fa.watchlist_id
       JOIN cameras c ON c.id = fa.camera_id
       JOIN pdvs p ON p.id = c.pdv_id
+      WHERE c.tenant_id = $1
     `;
-    const params = [];
-    let idx = 1;
+    const params = [tenantId];
+    let idx = 2;
 
     if (acknowledged !== undefined) {
-      query += ` WHERE fa.acknowledged = $${idx++}`;
+      query += ` AND fa.acknowledged = $${idx++}`;
       params.push(acknowledged === 'true');
     }
 

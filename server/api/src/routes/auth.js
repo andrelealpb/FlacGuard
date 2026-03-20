@@ -7,6 +7,7 @@ import {
   authenticate,
   authorize,
 } from '../services/auth.js';
+import { getTenantId } from '../services/tenant.js';
 
 const router = Router();
 
@@ -45,10 +46,13 @@ router.post('/setup', async (req, res) => {
       return res.status(400).json({ error: 'email, password, and full_name are required' });
     }
     const hashed = await hashPassword(password);
+    // Default tenant for first admin
+    const { rows: tenantRows } = await pool.query("SELECT id FROM tenants WHERE slug = 'happydo' LIMIT 1");
+    const defaultTenantId = tenantRows[0]?.id || null;
     const { rows } = await pool.query(
-      `INSERT INTO users (email, hashed_password, full_name, role)
-       VALUES ($1, $2, $3, 'admin') RETURNING id, email, full_name, role, created_at`,
-      [email, hashed, full_name]
+      `INSERT INTO users (email, hashed_password, full_name, role, tenant_id)
+       VALUES ($1, $2, $3, 'admin', $4) RETURNING id, email, full_name, role, tenant_id, created_at`,
+      [email, hashed, full_name, defaultTenantId]
     );
     const token = generateToken(rows[0]);
     res.status(201).json({ user: rows[0], access_token: token, token_type: 'bearer' });
@@ -60,12 +64,13 @@ router.post('/setup', async (req, res) => {
 // POST /api/auth/register (admin only)
 router.post('/register', authenticate, authorize('admin'), async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { email, password, full_name, role = 'viewer' } = req.body;
     const hashed = await hashPassword(password);
     const { rows } = await pool.query(
-      `INSERT INTO users (email, hashed_password, full_name, role)
-       VALUES ($1, $2, $3, $4) RETURNING id, email, full_name, role, created_at`,
-      [email, hashed, full_name, role]
+      `INSERT INTO users (email, hashed_password, full_name, role, tenant_id)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, email, full_name, role, tenant_id, created_at`,
+      [email, hashed, full_name, role, tenantId]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
