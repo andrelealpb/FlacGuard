@@ -21,7 +21,19 @@ interface SystemStats {
   faces: { total_embeddings: number };
   cameras: Record<string, number>;
   services: { name: string; status: string; ports: string }[];
-  s3?: { configured: boolean; recordings_in_s3: number; recordings_local: number; endpoint: string | null; bucket: string | null };
+  s3?: {
+    configured: boolean;
+    status: string;
+    recordings_in_s3: number;
+    recordings_local: number;
+    s3_size: number;
+    local_size: number;
+    bucket_objects: number;
+    bucket_size: number;
+    endpoint: string | null;
+    bucket: string | null;
+    error: string | null;
+  };
   disk_breakdown?: DiskBreakdownItem[];
   docker_disk?: { images: any[]; containers: any[] } | null;
 }
@@ -394,10 +406,10 @@ function Monitoring() {
           <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>Object Storage (S3)</div>
           <span style={{
             fontSize: "0.65rem", padding: "0.15rem 0.5rem", borderRadius: "10px", fontWeight: 600,
-            background: stats.s3?.configured ? "#e8f5e9" : "#fff3e0",
-            color: stats.s3?.configured ? "#2e7d32" : "#e65100",
+            background: stats.s3?.status === 'healthy' ? "#e8f5e9" : stats.s3?.configured ? "#ffebee" : "#fff3e0",
+            color: stats.s3?.status === 'healthy' ? "#2e7d32" : stats.s3?.configured ? "#c62828" : "#e65100",
           }}>
-            {stats.s3?.configured ? "Ativo" : "Não configurado"}
+            {stats.s3?.status === 'healthy' ? "Conectado" : stats.s3?.configured ? "Erro" : "Não configurado"}
           </span>
         </div>
         {stats.s3?.configured ? (
@@ -405,7 +417,40 @@ function Monitoring() {
             <div style={{ marginBottom: "0.3rem" }}>
               <strong>Endpoint:</strong> {stats.s3.endpoint} | <strong>Bucket:</strong> {stats.s3.bucket}
             </div>
-            <div style={{ display: "flex", gap: "1.5rem" }}>
+
+            {/* S3 error */}
+            {stats.s3.error && (
+              <div style={{
+                marginBottom: "0.4rem", padding: "0.3rem 0.5rem", borderRadius: "4px",
+                background: "#ffebee", color: "#c62828", fontSize: "0.65rem",
+              }}>
+                Erro S3: {stats.s3.error}
+              </div>
+            )}
+
+            {/* Bucket usage */}
+            <div style={{
+              display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem",
+              marginBottom: "0.4rem", padding: "0.4rem", background: "#f5f5f5", borderRadius: "4px",
+            }}>
+              <div>
+                <div style={{ fontSize: "0.6rem", color: "#999" }}>Armazenamento S3</div>
+                <div style={{ fontSize: "1rem", fontWeight: 700, color: "#1565c0" }}>
+                  {formatBytes(stats.s3.bucket_size || 0)}
+                </div>
+                <div style={{ fontSize: "0.6rem", color: "#999" }}>{stats.s3.bucket_objects || 0} objetos no bucket</div>
+              </div>
+              <div>
+                <div style={{ fontSize: "0.6rem", color: "#999" }}>Armazenamento local</div>
+                <div style={{ fontSize: "1rem", fontWeight: 700, color: "#e65100" }}>
+                  {formatBytes(stats.s3.local_size || 0)}
+                </div>
+                <div style={{ fontSize: "0.6rem", color: "#999" }}>{stats.s3.recordings_local || 0} gravações no disco</div>
+              </div>
+            </div>
+
+            {/* Migration progress */}
+            <div style={{ display: "flex", gap: "1.5rem", marginBottom: "0.3rem" }}>
               <div>
                 <span style={{ fontWeight: 600, color: "#2e7d32" }}>{stats.s3.recordings_in_s3}</span> gravações no S3
               </div>
@@ -413,16 +458,14 @@ function Monitoring() {
                 <span style={{ fontWeight: 600, color: "#e65100" }}>{stats.s3.recordings_local}</span> gravações locais
               </div>
             </div>
-            {stats.s3.recordings_local > 0 && stats.s3.recordings_in_s3 > 0 && (
-              <div style={{ marginTop: "0.3rem" }}>
-                <Gauge
-                  value={stats.s3.recordings_in_s3}
-                  max={stats.s3.recordings_in_s3 + stats.s3.recordings_local}
-                  label="Migração para S3"
-                  color="#2e7d32"
-                  detail={`${Math.round((stats.s3.recordings_in_s3 / (stats.s3.recordings_in_s3 + stats.s3.recordings_local)) * 100)}%`}
-                />
-              </div>
+            {(stats.s3.recordings_local > 0 || stats.s3.recordings_in_s3 > 0) && (
+              <Gauge
+                value={stats.s3.recordings_in_s3}
+                max={stats.s3.recordings_in_s3 + stats.s3.recordings_local}
+                label="Migração para S3"
+                color="#2e7d32"
+                detail={`${(stats.s3.recordings_in_s3 + stats.s3.recordings_local) > 0 ? Math.round((stats.s3.recordings_in_s3 / (stats.s3.recordings_in_s3 + stats.s3.recordings_local)) * 100) : 0}%`}
+              />
             )}
           </div>
         ) : (

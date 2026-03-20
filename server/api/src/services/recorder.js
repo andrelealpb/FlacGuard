@@ -91,11 +91,19 @@ export function startRecording(camera, recordingType = 'motion', thumbnailPath =
           const { rows: camRows } = await pool.query('SELECT tenant_id FROM cameras WHERE id = $1', [id]);
           const tenantId = camRows[0]?.tenant_id;
           if (tenantId) {
+            console.log(`[Recorder] S3 upload starting for ${name}: ${filePath} (${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
             const s3Result = await uploadRecording(filePath, tenantId, id);
             if (s3Result) {
               await pool.query('UPDATE recordings SET s3_key = $1 WHERE id = $2', [s3Result.s3Key, recId]);
+              console.log(`[Recorder] S3 upload complete for ${name}: ${s3Result.s3Key}`);
+            } else {
+              console.error(`[Recorder] S3 upload FAILED for ${name}: ${filePath} — file kept on local disk`);
             }
+          } else {
+            console.warn(`[Recorder] No tenant_id for camera ${name} (id=${id}), skipping S3 upload`);
           }
+        } else if (!isS3Configured()) {
+          console.log(`[Recorder] S3 not configured, keeping recording on local disk`);
         }
       } catch (err) {
         console.error(`[Recorder] Error saving recording for ${name}:`, err.message);

@@ -212,6 +212,52 @@ function getDockerDiskCached() {
   return dockerDiskCache;
 }
 
+// Cache S3 bucket info (expensive — cache for 60s)
+let s3BucketInfoCache = null;
+let s3BucketInfoCacheTime = 0;
+async function getS3BucketInfoCached() {
+  const now = Date.now();
+  if (s3BucketInfoCache && now - s3BucketInfoCacheTime < 60000) {
+    return s3BucketInfoCache;
+  }
+  const result = { status: 'error', objects: 0, size: 0, error: null };
+  try {
+    const { S3Client, HeadBucketCommand, ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+    const client = new S3Client({
+      endpoint: process.env.S3_ENDPOINT,
+      region: process.env.S3_REGION || 'us-east-1',
+      credentials: {
+        accessKeyId: process.env.S3_ACCESS_KEY,
+        secretAccessKey: process.env.S3_SECRET_KEY,
+      },
+      forcePathStyle: true,
+    });
+
+    await client.send(new HeadBucketCommand({ Bucket: process.env.S3_BUCKET }));
+    result.status = 'healthy';
+
+    // List all objects to compute total size
+    let continuationToken;
+    do {
+      const list = await client.send(new ListObjectsV2Command({
+        Bucket: process.env.S3_BUCKET,
+        ContinuationToken: continuationToken,
+        MaxKeys: 1000,
+      }));
+      for (const obj of list.Contents || []) {
+        result.objects++;
+        result.size += obj.Size || 0;
+      }
+      continuationToken = list.IsTruncated ? list.NextContinuationToken : null;
+    } while (continuationToken);
+  } catch (err) {
+    result.error = err.message;
+  }
+  s3BucketInfoCache = result;
+  s3BucketInfoCacheTime = now;
+  return result;
+}
+
 // GET /api/monitor/stats — Full system stats
 router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
   try {
@@ -243,8 +289,20 @@ router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
       FROM recordings
     `);
 
-    // S3 storage stats
-    let s3Stats = { configured: isS3Configured(), recordings_in_s3: 0, recordings_local: 0, endpoint: null, bucket: null };
+    // S3 storage stats (with real bucket check)
+    let s3Stats = {
+      configured: isS3Configured(),
+      status: 'not_configured',
+      recordings_in_s3: 0,
+      recordings_local: 0,
+      s3_size: 0,
+      local_size: 0,
+      bucket_objects: 0,
+      bucket_size: 0,
+      endpoint: null,
+      bucket: null,
+      error: null,
+    };
     if (s3Stats.configured) {
       s3Stats.endpoint = process.env.S3_ENDPOINT || null;
       s3Stats.bucket = process.env.S3_BUCKET || null;
@@ -252,12 +310,25 @@ router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
         const { rows: s3Counts } = await pool.query(`
           SELECT
             count(*) FILTER (WHERE s3_key IS NOT NULL)::int as in_s3,
-            count(*) FILTER (WHERE s3_key IS NULL)::int as local_only
+            count(*) FILTER (WHERE s3_key IS NULL)::int as local_only,
+            COALESCE(SUM(file_size) FILTER (WHERE s3_key IS NOT NULL), 0)::text as s3_size,
+            COALESCE(SUM(file_size) FILTER (WHERE s3_key IS NULL), 0)::text as local_size
           FROM recordings
         `);
         s3Stats.recordings_in_s3 = s3Counts[0].in_s3;
         s3Stats.recordings_local = s3Counts[0].local_only;
+        s3Stats.s3_size = parseInt(s3Counts[0].s3_size, 10);
+        s3Stats.local_size = parseInt(s3Counts[0].local_size, 10);
       } catch { /* ignore */ }
+
+      // Test real S3 connectivity + get bucket usage (cached 60s)
+      try {
+        const bucketInfo = await getS3BucketInfoCached();
+        s3Stats.status = bucketInfo.status;
+        s3Stats.bucket_objects = bucketInfo.objects;
+        s3Stats.bucket_size = bucketInfo.size;
+        s3Stats.error = bucketInfo.error;
+      } catch { s3Stats.status = 'error'; }
     }
 
     // Face embeddings count
