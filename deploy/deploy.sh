@@ -9,6 +9,18 @@ STARTED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 # Redirect all output to log file AND stdout
 exec > >(tee -a "$LOG_FILE") 2>&1
 
+# Helper to update deploy-status.json with current step
+update_status() {
+  local step="$1"
+  cat > "$STATUS_FILE" <<STEPEOF
+{
+  "status": "deploying",
+  "started_at": "$STARTED_AT",
+  "step": "$step"
+}
+STEPEOF
+}
+
 # Trap errors so status never stays stuck on "deploying"
 cleanup_on_error() {
   local exit_code=$?
@@ -27,17 +39,21 @@ FAILEOF
 }
 trap cleanup_on_error EXIT
 
+# Also trap SIGTERM/SIGKILL so status is updated when webhook kills us
+trap 'echo "$LOG_PREFIX Received SIGTERM, cleaning up..."; FAILED_AT=$(date -u "+%Y-%m-%dT%H:%M:%SZ"); echo "{\"status\":\"failed\",\"started_at\":\"$STARTED_AT\",\"finished_at\":\"$FAILED_AT\",\"message\":\"Deploy interrompido (SIGTERM).\"}" > "$STATUS_FILE"; exit 1' TERM
+
 set -e
 
 echo "$LOG_PREFIX $STARTED_AT Starting deploy..."
 
 cd "$DEPLOY_DIR"
 
-# Write "deploying" status
-echo "{\"status\":\"deploying\",\"started_at\":\"$STARTED_AT\"}" > "$STATUS_FILE"
+# Write initial "deploying" status
+update_status "Iniciando..."
 
 # Pull latest changes
 echo "$LOG_PREFIX Pulling latest code..."
+update_status "Baixando código..."
 git fetch origin
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
@@ -63,11 +79,13 @@ BUILD_TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 SERVICES="dashboard api face-service nginx-rtmp"
 BUILD_RESULTS=""
+BUILD_FAILED=false
 
 for SERVICE in $SERVICES; do
   echo "$LOG_PREFIX Building $SERVICE..."
+  update_status "Build: $SERVICE"
   SERVICE_BUILD_START=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-  if docker compose build \
+  if timeout 300 docker compose build \
     --build-arg "BUILD_COMMIT=$COMMIT_HASH" \
     --build-arg "BUILD_BRANCH=$BRANCH" \
     --build-arg "BUILD_TIMESTAMP=$BUILD_TIMESTAMP" \
@@ -78,6 +96,7 @@ for SERVICE in $SERVICES; do
     echo "$LOG_PREFIX $SERVICE build: OK"
   else
     SERVICE_BUILD_STATUS="error"
+    BUILD_FAILED=true
     echo "$LOG_PREFIX $SERVICE build: FAILED"
   fi
   SERVICE_BUILD_END=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -87,14 +106,17 @@ for SERVICE in $SERVICES; do
 done
 
 echo "$LOG_PREFIX Restarting containers..."
+update_status "Reiniciando containers..."
 docker compose up -d --remove-orphans
 
 # Wait for services to start (face-service loads ML models and needs more time)
 echo "$LOG_PREFIX Waiting for services..."
+update_status "Aguardando serviços..."
 sleep 10
 
 # Poll face-service health until models are loaded (up to 120s)
 echo "$LOG_PREFIX Waiting for face-service models to load..."
+update_status "Carregando modelos de IA..."
 FACE_READY=false
 for i in $(seq 1 22); do
   FACE_HEALTH=$(curl -sf http://localhost:8001/health 2>/dev/null || echo '')
@@ -107,6 +129,7 @@ for i in $(seq 1 22); do
 done
 
 # Check health of each service
+update_status "Verificando saúde..."
 API_HEALTH=$(curl -sf http://localhost:8000/health 2>/dev/null || echo '{"status":"error"}')
 RTMP_HEALTH=$(curl -sf http://localhost:8080/health 2>/dev/null || echo '{"status":"error"}')
 if [ "$FACE_READY" = "false" ]; then

@@ -95,34 +95,46 @@ function getDiskUsage() {
 // Helper: detailed disk breakdown using du for key directories
 function getDiskBreakdown() {
   const breakdown = [];
+  // Host filesystem is mounted at /host (read-only)
+  const hostRoot = existsSync('/host/proc') ? '/host' : '';
+
   try {
-    // Docker images/containers/volumes
+    // Docker images/containers/volumes (requires Docker socket mount)
     const dockerDf = execSync("docker system df --format '{{.Type}}\\t{{.Size}}\\t{{.Reclaimable}}' 2>/dev/null", { encoding: 'utf8', timeout: 15000 });
     for (const line of dockerDf.trim().split('\n').filter(Boolean)) {
       const [type, size, reclaimable] = line.split('\t');
       breakdown.push({ name: `Docker ${type}`, size, reclaimable: reclaimable || '0B', category: 'docker' });
     }
   } catch {
-    // Docker not accessible from inside container - try via host paths
+    // Docker socket not available
   }
 
-  // Check common large directories
+  // Check common large directories on the HOST filesystem
   const dirs = [
-    { path: '/var/log', name: 'Logs do sistema' },
     { path: '/var/lib/docker', name: 'Docker (total)' },
-    { path: '/var/lib/docker/overlay2', name: 'Docker layers' },
-    { path: '/var/lib/docker/volumes', name: 'Docker volumes' },
+    { path: '/var/lib/docker/overlay2', name: '  Layers (overlay2)' },
+    { path: '/var/lib/docker/volumes', name: '  Volumes' },
+    { path: '/var/lib/docker/image', name: '  Imagens (metadata)' },
+    { path: '/var/lib/docker/containers', name: '  Containers (logs)' },
+    { path: '/var/lib/docker/buildkit', name: '  Build cache' },
+    { path: '/var/log', name: 'Logs do sistema' },
     { path: '/var/cache', name: 'Cache do sistema' },
-    { path: '/tmp', name: 'Arquivos temporários' },
-    { path: '/var/lib/apt', name: 'Pacotes APT' },
     { path: '/usr', name: 'Sistema (/usr)' },
     { path: '/opt', name: 'Aplicações (/opt)' },
     { path: '/snap', name: 'Snap packages' },
+    { path: '/tmp', name: 'Arquivos temporários' },
+    { path: '/var/lib/apt', name: 'Pacotes APT' },
+    { path: '/root', name: 'Home root' },
+    { path: '/home', name: 'Home users' },
+    { path: '/boot', name: 'Boot/Kernel' },
   ];
 
   for (const dir of dirs) {
     try {
-      const out = execSync(`du -sb ${dir.path} 2>/dev/null`, { encoding: 'utf8', timeout: 10000 });
+      const scanPath = hostRoot + dir.path;
+      if (!existsSync(scanPath)) continue;
+      // Use du -s (summary) with max-depth to avoid excessive I/O on huge dirs
+      const out = execSync(`du -sb --max-depth=0 ${scanPath} 2>/dev/null`, { encoding: 'utf8', timeout: 30000 });
       const bytes = parseInt(out.trim().split('\t')[0], 10);
       if (bytes > 0) {
         breakdown.push({ name: dir.name, path: dir.path, bytes, category: 'system' });

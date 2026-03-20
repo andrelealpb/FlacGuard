@@ -37,6 +37,7 @@ interface DeployStatus {
   message?: string;
   elapsed_seconds?: number;
   stuck?: boolean;
+  step?: string;
   build?: {
     timestamp: string;
     services: BuildServiceInfo[];
@@ -354,7 +355,7 @@ function Settings() {
                       }}
                     >
                       {deploy.status === "success" || deploy.status === "ok" ? "OK"
-                        : deploy.status === "deploying" ? `Deployando... ${Math.floor(deployElapsed / 60)}m ${deployElapsed % 60}s`
+                        : deploy.status === "deploying" ? `Deployando... ${Math.floor(deployElapsed / 60)}m ${deployElapsed % 60}s${deploy.step ? ` — ${deploy.step}` : ""}`
                         : deploy.status === "failed" ? (deploy.stuck ? "Travou" : "Falhou")
                         : deploy.status === "degraded" ? "Degradado"
                         : deploy.status}

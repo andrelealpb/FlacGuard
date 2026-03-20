@@ -2,7 +2,8 @@
 FROM node:20-alpine
 
 # FFmpeg for motion detection (frame extraction) and recording
-RUN apk add --no-cache ffmpeg
+# Docker CLI for host disk monitoring (via socket mount)
+RUN apk add --no-cache ffmpeg docker-cli
 
 WORKDIR /app
 
