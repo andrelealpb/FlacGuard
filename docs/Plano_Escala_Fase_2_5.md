@@ -12,7 +12,7 @@
 ## Ação 1: Upgrade VPS (manual no painel Contabo)
 
 ### O que fazer
-1. Acessar painel Contabo → VPS → Cloud VPS 10 NVMe (147.93.7.251)
+1. Acessar painel Contabo → VPS → Cloud VPS 20 NVMe (147.93.141.133)
 2. Clicar "Upgrade" → Cloud VPS 20 NVMe ($10.75/mês)
 3. Specs: 6 cores, 12GB RAM, 100GB NVMe, 300 Mbit/s
 
