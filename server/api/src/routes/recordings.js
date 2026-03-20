@@ -6,6 +6,7 @@ import { authenticate, authorize } from '../services/auth.js';
 import { cleanupCamera, cleanupAllCameras } from '../services/cleanup.js';
 import { detectFaces, searchFace } from '../services/face-recognition.js';
 import { getTenantId } from '../services/tenant.js';
+import { getPresignedUrl } from '../services/storage.js';
 
 const router = Router();
 
@@ -98,12 +99,19 @@ router.get('/:id/stream', authenticate, async (req, res) => {
   try {
     const tenantId = getTenantId(req);
     const { rows } = await pool.query(
-      `SELECT r.file_path FROM recordings r
+      `SELECT r.file_path, r.s3_key FROM recordings r
        JOIN cameras c ON r.camera_id = c.id
        WHERE r.id = $1 AND c.tenant_id = $2`,
       [req.params.id, tenantId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Recording not found' });
+
+    // If stored in S3, redirect to pre-signed URL
+    if (rows[0].s3_key) {
+      const url = await getPresignedUrl(rows[0].s3_key, 3600);
+      if (url) return res.redirect(302, url);
+      // Fallback to local if presigned URL fails
+    }
 
     const filePath = rows[0].file_path;
     if (!filePath || !existsSync(filePath)) {

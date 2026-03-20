@@ -11,6 +11,7 @@ import {
 import { writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getTenantId } from '../services/tenant.js';
+import { uploadWatchlistPhoto, getPresignedUrl } from '../services/storage.js';
 
 const router = Router();
 const WATCHLIST_DIR = '/data/recordings/watchlist';
@@ -203,6 +204,14 @@ router.post('/watchlist', authenticate, authorize('admin'), async (req, res) => 
     );
 
     console.log(`[Face] Watchlist entry added: "${name}" (${alert_type || 'suspect'}) — confidence ${(confidence * 100).toFixed(1)}%`);
+
+    // Upload to S3 in background
+    const entryId = rows[0].id;
+    uploadWatchlistPhoto(photoPath, tenantId, entryId).then(async (s3Result) => {
+      if (s3Result) {
+        await pool.query('UPDATE face_watchlist SET photo_s3_key = $1 WHERE id = $2', [s3Result.s3Key, entryId]);
+      }
+    }).catch(() => {});
 
     res.status(201).json({
       ...rows[0],

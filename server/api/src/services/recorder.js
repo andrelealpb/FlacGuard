@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { existsSync, statSync, mkdirSync } from 'fs';
 import { pool } from '../db/pool.js';
+import { uploadRecording, isS3Configured } from './storage.js';
 
 // Active recording processes per camera
 const activeRecordings = new Map();
@@ -75,13 +76,27 @@ export function startRecording(camera, recordingType = 'motion', thumbnailPath =
     // Only save recording if file exists and has reasonable size (> 10KB)
     if (fileSize && fileSize > 10240) {
       try {
-        await pool.query(
+        const { rows: recRows } = await pool.query(
           `INSERT INTO recordings (camera_id, file_path, file_size, duration, started_at, ended_at, thumbnail_path, recording_type)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
           [id, filePath, fileSize, durationSec, startedAt, endedAt, thumbnailPath, recordingType]
         );
 
         console.log(`[Recorder] Camera ${name}: saved ${recordingType} recording (${durationSec}s, ${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
+
+        // Upload to S3 in background (non-blocking)
+        if (isS3Configured() && recRows[0]) {
+          const recId = recRows[0].id;
+          // Get tenant_id from camera
+          const { rows: camRows } = await pool.query('SELECT tenant_id FROM cameras WHERE id = $1', [id]);
+          const tenantId = camRows[0]?.tenant_id;
+          if (tenantId) {
+            const s3Result = await uploadRecording(filePath, tenantId, id);
+            if (s3Result) {
+              await pool.query('UPDATE recordings SET s3_key = $1 WHERE id = $2', [s3Result.s3Key, recId]);
+            }
+          }
+        }
       } catch (err) {
         console.error(`[Recorder] Error saving recording for ${name}:`, err.message);
       }
