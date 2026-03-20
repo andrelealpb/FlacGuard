@@ -21,6 +21,7 @@ interface SystemStats {
   faces: { total_embeddings: number };
   cameras: Record<string, number>;
   services: { name: string; status: string; ports: string }[];
+  s3?: { configured: boolean; recordings_in_s3: number; recordings_local: number; endpoint: string | null; bucket: string | null };
   disk_breakdown?: DiskBreakdownItem[];
   docker_disk?: { images: any[]; containers: any[] } | null;
 }
@@ -385,6 +386,50 @@ function Monitoring() {
           <strong>Banco de dados:</strong> {formatBytes(stats.database.size)} | {stats.database.active_connections} conexões ativas |{" "}
           {stats.recordings.total} gravações | {stats.faces.total_embeddings} face embeddings
         </div>
+      </div>
+
+      {/* S3 Storage */}
+      <div style={{ ...card, marginTop: "0.75rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+          <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>Object Storage (S3)</div>
+          <span style={{
+            fontSize: "0.65rem", padding: "0.15rem 0.5rem", borderRadius: "10px", fontWeight: 600,
+            background: stats.s3?.configured ? "#e8f5e9" : "#fff3e0",
+            color: stats.s3?.configured ? "#2e7d32" : "#e65100",
+          }}>
+            {stats.s3?.configured ? "Ativo" : "Não configurado"}
+          </span>
+        </div>
+        {stats.s3?.configured ? (
+          <div style={{ fontSize: "0.7rem", color: "#666" }}>
+            <div style={{ marginBottom: "0.3rem" }}>
+              <strong>Endpoint:</strong> {stats.s3.endpoint} | <strong>Bucket:</strong> {stats.s3.bucket}
+            </div>
+            <div style={{ display: "flex", gap: "1.5rem" }}>
+              <div>
+                <span style={{ fontWeight: 600, color: "#2e7d32" }}>{stats.s3.recordings_in_s3}</span> gravações no S3
+              </div>
+              <div>
+                <span style={{ fontWeight: 600, color: "#e65100" }}>{stats.s3.recordings_local}</span> gravações locais
+              </div>
+            </div>
+            {stats.s3.recordings_local > 0 && stats.s3.recordings_in_s3 > 0 && (
+              <div style={{ marginTop: "0.3rem" }}>
+                <Gauge
+                  value={stats.s3.recordings_in_s3}
+                  max={stats.s3.recordings_in_s3 + stats.s3.recordings_local}
+                  label="Migração para S3"
+                  color="#2e7d32"
+                  detail={`${Math.round((stats.s3.recordings_in_s3 / (stats.s3.recordings_in_s3 + stats.s3.recordings_local)) * 100)}%`}
+                />
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ fontSize: "0.7rem", color: "#999" }}>
+            Gravações armazenadas no disco local. Configure as variáveis S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY e S3_SECRET_KEY para ativar.
+          </div>
+        )}
       </div>
     </div>
   );
