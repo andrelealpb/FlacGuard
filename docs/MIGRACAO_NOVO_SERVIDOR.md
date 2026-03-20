@@ -1,31 +1,59 @@
-# Checklist de Migracao — Novo Servidor Contabo
+# Checklist de Upgrade — VPS Contabo (In-Place)
 
-**De:** VPS antigo (IP anterior)
-**Para:** Cloud VPS 20 NVMe — IP `147.93.7.251` (Carlstadt, US East)
+**Servidor:** Cloud VPS 20 NVMe — IP `147.93.7.251` (Carlstadt, US East)
+**Tipo:** Upgrade in-place (mesmo servidor, mesmo IP)
+**De:** Cloud VPS 10 NVMe (4 cores, 8GB RAM, 75GB NVMe)
+**Para:** Cloud VPS 20 NVMe (6 cores, 12GB RAM, 100GB NVMe)
 **OS:** Ubuntu 24.04
 **VNC:** `144.126.149.10:63315`
 
+> **Nota:** Como o endereco do servidor nao muda, as cameras, DNS e webhooks
+> continuam funcionando sem nenhuma alteracao.
+
 ---
 
-## Fase 1 — Acesso e preparacao do servidor
+## Fase 1 — Antes do upgrade (no painel Contabo)
 
-### 1.1 Conectar via SSH
+### 1.1 Fazer backup do banco
 
 ```bash
 ssh root@147.93.7.251
+cd /opt/FlacGuard
+
+# Backup do banco
+docker compose exec db pg_dump -U flac_guard flac_guard > /opt/FlacGuard/backup-pre-upgrade.sql
+
+# Verificar tamanho
+ls -lh backup-pre-upgrade.sql
+
+# Verificar volumes Docker (serao preservados)
+docker volume ls | grep flac-guard
 ```
 
-Se a chave SSH nao foi migrada, usar VNC primeiro para configurar:
+### 1.2 Realizar o upgrade no painel
+
+1. Acessar painel Contabo → VPS → Cloud VPS 10 NVMe (147.93.7.251)
+2. Clicar "Upgrade" → Cloud VPS 20 NVMe ($10.75/mes)
+3. Aguardar (o VPS sera reiniciado automaticamente)
+
+---
+
+## Fase 2 — Apos o upgrade
+
+### 2.1 Verificar acesso
+
 ```bash
-# Via VNC (144.126.149.10:63315)
-mkdir -p ~/.ssh
-echo "SUA_CHAVE_PUBLICA" >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
+ssh root@147.93.7.251
+
+# Verificar novos recursos
+nproc           # Deve mostrar 6
+free -h         # Deve mostrar ~12GB
+df -h /         # Verificar espaco em disco
 ```
 
-### 1.2 Expandir particao do disco
+### 2.2 Expandir particao do disco (se necessario)
 
-A Contabo avisou que o espaco adicional precisa de expansao manual:
+A Contabo pode precisar de expansao manual do disco:
 
 ```bash
 # Ver situacao atual
@@ -38,7 +66,7 @@ sudo resize2fs /dev/vda1
 
 # Verificar
 df -h
-# Deve mostrar ~100GB+ agora
+# Deve mostrar ~100GB agora
 ```
 
 Se usar XFS ao inves de ext4:
@@ -46,330 +74,78 @@ Se usar XFS ao inves de ext4:
 sudo xfs_growfs /
 ```
 
-### 1.3 Atualizar sistema
+### 2.3 Limpar Docker (liberar espaco)
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo reboot
-```
-
----
-
-## Fase 2 — Instalar dependencias
-
-### 2.1 Docker
-
-```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-
-# Relogar para ativar grupo docker
-exit
-ssh root@147.93.7.251
-
-# Verificar
-docker --version
-docker compose version
-```
-
-### 2.2 Ferramentas auxiliares
-
-```bash
-sudo apt install -y git curl ufw htop awscli
-```
-
----
-
-## Fase 3 — Firewall
-
-```bash
-sudo ufw allow 22/tcp     # SSH
-sudo ufw allow 80/tcp     # HTTP (redirect para HTTPS)
-sudo ufw allow 443/tcp    # HTTPS (dashboard)
-sudo ufw allow 1935/tcp   # RTMP (cameras)
-sudo ufw allow 9000/tcp   # Webhook deploy (temporario, fechar depois se quiser)
-sudo ufw enable
-sudo ufw status
-```
-
----
-
-## Fase 4 — Clonar e configurar o projeto
-
-### 4.1 Clonar repositorio
-
-```bash
-git clone https://github.com/andrelealpb/FlacGuard.git /opt/FlacGuard
+# Parar servicos
 cd /opt/FlacGuard
+docker compose down
+
+# Limpar imagens, containers e caches antigos
+docker system prune -a --filter "until=72h"
+docker builder prune -a
+
+# Verificar espaco recuperado
+df -h /
+# Deve liberar ~15-20GB
 ```
 
-### 4.2 Criar .env de producao
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-Preencher:
-```bash
-# JWT — gerar um novo secret
-JWT_SECRET=$(openssl rand -hex 32)
-
-# Banco de dados — trocar a senha padrao!
-POSTGRES_USER=flac_guard
-POSTGRES_PASSWORD=TROCAR_PARA_SENHA_FORTE
-POSTGRES_DB=flac_guard
-
-# HappyDo Pulse
-PULSE_API_URL=https://happydopulse-production.up.railway.app/api
-PULSE_EMAIL=seu-email
-PULSE_PASSWORD=sua-senha
-
-# Webhook (sera gerado pelo setup.sh)
-WEBHOOK_SECRET=
-
-# S3 Contabo (opcional — ver docs/SETUP_S3_CONTABO.md)
-S3_ENDPOINT=
-S3_BUCKET=flac-guard-recordings
-S3_ACCESS_KEY=
-S3_SECRET_KEY=
-S3_REGION=us-east-1
-S3_RECORDINGS_PREFIX=recordings
-S3_FACES_PREFIX=faces
-S3_WATCHLIST_PREFIX=watchlist
-```
-
-### 4.3 Criar volumes Docker
-
-```bash
-docker volume create flac-guard_pgdata
-docker volume create flac-guard_hls_data
-docker volume create flac-guard_recordings
-```
-
-### 4.4 Subir servicos
+### 2.4 Subir servicos novamente
 
 ```bash
 cd /opt/FlacGuard
 docker compose up -d
+
+# Aguardar ~60-90s para o face-service carregar modelos
+docker compose ps
 ```
 
-### 4.5 Rodar migrations do banco
+### 2.5 Restaurar banco (se volumes foram perdidos)
+
+Se os volumes Docker forem preservados (cenario normal), o banco ja esta intacto.
+Se por algum motivo os volumes foram perdidos:
 
 ```bash
+# Recriar volumes
+docker volume create flac-guard_pgdata
+docker volume create flac-guard_hls_data
+docker volume create flac-guard_recordings
+
+# Subir apenas o banco
+docker compose up -d db
+sleep 5
+
+# Restaurar backup
+docker compose exec -T db psql -U flac_guard flac_guard < /opt/FlacGuard/backup-pre-upgrade.sql
+
+# Rodar migrations (para aplicar as novas, como multi-tenant e S3)
 docker compose exec api node src/db/migrate.js
-```
 
-### 4.6 Verificar saude
-
-```bash
-# API
-curl http://localhost:8000/health
-
-# RTMP
-curl http://localhost:8080/health
-
-# Face service (demora ~60s para carregar modelos)
-curl http://localhost:8001/health
-
-# Dashboard
-curl -I http://localhost:3000
+# Subir todos os servicos
+docker compose up -d
 ```
 
 ---
 
-## Fase 5 — Migrar dados do servidor antigo (se necessario)
+## Fase 3 — Validacao pos-upgrade
 
-### 5.1 Exportar banco de dados (servidor antigo)
-
-```bash
-# No servidor ANTIGO
-docker compose exec db pg_dump -U flac_guard flac_guard > /tmp/flac_guard_backup.sql
-scp /tmp/flac_guard_backup.sql root@147.93.7.251:/tmp/
-```
-
-### 5.2 Importar banco de dados (servidor novo)
-
-```bash
-# No servidor NOVO
-docker compose exec -T db psql -U flac_guard flac_guard < /tmp/flac_guard_backup.sql
-```
-
-### 5.3 Migrar gravacoes (se quiser manter historico)
-
-```bash
-# No servidor ANTIGO — copiar para o novo
-rsync -avz --progress /var/lib/docker/volumes/flac-guard_recordings/_data/ \
-  root@147.93.7.251:/var/lib/docker/volumes/flac-guard_recordings/_data/
-```
-
-Ou, se preferir, configure o S3 e deixe as gravacoes antigas para tras.
-Novas gravacoes irao direto para o Object Storage.
-
----
-
-## Fase 6 — Configurar DNS e dominio
-
-### 6.1 Registros DNS (no painel do registrador — Registro.br ou similar)
-
-Como `flactech.com.br` ja esta concluido, configurar:
+### Checklist
 
 ```
-Tipo   Nome                      Valor              TTL
-A      guard.flactech.com.br     147.93.7.251       300
-A      flactech.com.br           147.93.7.251       300
-```
-
-Quando `flacsistemas.com.br` ficar pronto:
-```
-Tipo    Nome                         Valor                     TTL
-CNAME   guard.flacsistemas.com.br    guard.flactech.com.br     300
-CNAME   flacsistemas.com.br          flactech.com.br           300
-```
-
-### 6.2 Verificar propagacao DNS
-
-```bash
-# Testar (pode levar 5-30 min)
-dig guard.flactech.com.br +short
-# Deve retornar: 147.93.7.251
-
-nslookup guard.flactech.com.br
-```
-
-Site util: https://dnschecker.org
-
-### 6.3 HTTPS com Let's Encrypt
-
-```bash
-sudo apt install -y certbot
-
-# Parar o dashboard temporariamente (porta 80 precisa estar livre)
-docker compose stop dashboard
-
-# Gerar certificado
-sudo certbot certonly --standalone \
-  -d guard.flactech.com.br \
-  --agree-tos \
-  -m seu-email@dominio.com
-
-# Reiniciar dashboard
-docker compose start dashboard
-```
-
-Certificado gerado em:
-- `/etc/letsencrypt/live/guard.flactech.com.br/fullchain.pem`
-- `/etc/letsencrypt/live/guard.flactech.com.br/privkey.pem`
-
-### 6.4 Renovacao automatica
-
-```bash
-# Certbot ja instala um timer, verificar:
-sudo systemctl list-timers | grep certbot
-
-# Testar renovacao
-sudo certbot renew --dry-run
-```
-
----
-
-## Fase 7 — Configurar webhook de deploy automatico
-
-```bash
-cd /opt/FlacGuard
-sudo bash deploy/setup.sh
-```
-
-Depois no GitHub:
-1. Ir em: https://github.com/andrelealpb/FlacGuard/settings/hooks
-2. Editar o webhook existente (ou criar novo)
-3. Payload URL: `http://147.93.7.251:9000/webhook` (ou `http://guard.flactech.com.br:9000/webhook`)
-4. Secret: o valor gerado pelo setup.sh (ver no `.env`)
-5. Events: apenas "push"
-
-Testar:
-```bash
-curl http://localhost:9000/status
-```
-
----
-
-## Fase 8 — Configurar cameras
-
-### 8.1 Atualizar endereco RTMP no dashboard
-
-1. Acessar `http://147.93.7.251:3000` (ou `https://guard.flactech.com.br`)
-2. Ir em **Configuracoes** → **Servidor RTMP**
-3. Alterar IP/dominio para: `guard.flactech.com.br` (recomendado) ou `147.93.7.251`
-4. Porta: `1935`
-5. Salvar
-
-### 8.2 Reconfigurar cameras Intelbras (iM3 C, iM5 SC, iMX)
-
-Para cada camera com RTMP nativo:
-
-1. Acessar a camera via navegador (IP local da camera)
-2. Ir em **Configuracao** → **Rede** → **RTMP**
-3. Alterar o endereco do servidor RTMP:
-   ```
-   Antes:  rtmp://IP_ANTIGO:1935/live/STREAM_KEY
-   Depois: rtmp://guard.flactech.com.br:1935/live/STREAM_KEY
-   ```
-4. A stream key de cada camera permanece a mesma
-5. Ativar e salvar
-
-**Dica:** usando o dominio `guard.flactech.com.br` em vez do IP,
-futuras migracoes de servidor so precisam mudar o DNS — sem tocar nas cameras.
-
-### 8.3 Reconfigurar agentes Pi Zero (cameras IC3/IC5)
-
-Para cada Pi Zero rodando o agente:
-
-```bash
-ssh pi@IP_DO_PI_ZERO
-
-sudo nano /etc/flac-guard-agent.conf
-# Alterar SERVER_URL:
-# SERVER_URL=rtmp://guard.flactech.com.br:1935/live
-
-sudo systemctl restart flac-guard-agent
-```
-
-### 8.4 Verificar que todas as cameras estao online
-
-1. No dashboard → **Cameras**
-2. Todas devem mostrar status "online" dentro de ~90 segundos
-3. Se alguma ficar offline, verificar:
-   - Firewall: porta 1935 aberta? (`sudo ufw status`)
-   - DNS: camera resolve o dominio? (cameras Intelbras mais antigas podem precisar de IP)
-   - Stream key: mesma de antes?
-
----
-
-## Fase 9 — Validacao final
-
-### Checklist pos-migracao
-
-```
-[ ] SSH funcionando no novo IP
-[ ] Particao expandida (df -h mostra espaco total)
-[ ] Firewall ativo (ufw status)
-[ ] Docker rodando (docker ps)
-[ ] Todos os 5 containers up (api, dashboard, db, nginx-rtmp, face-service)
+[ ] SSH funcionando (ssh root@147.93.7.251)
+[ ] CPU: 6 cores (nproc)
+[ ] RAM: ~12GB (free -h)
+[ ] Disco: ~100GB NVMe (df -h /)
+[ ] Todos os 5 containers up (docker compose ps)
 [ ] API health OK (curl localhost:8000/health)
 [ ] Face service com modelo carregado (curl localhost:8001/health)
-[ ] Dashboard acessivel no navegador
-[ ] DNS guard.flactech.com.br resolve para 147.93.7.251
-[ ] HTTPS funcionando (certificado Let's Encrypt)
-[ ] RTMP configurado com dominio no dashboard
+[ ] Dashboard acessivel (https://guard.flactech.com.br)
 [ ] Cameras online e transmitindo
 [ ] Gravacoes sendo salvas
 [ ] Deteccao de movimento funcionando
 [ ] Reconhecimento facial funcionando
-[ ] Webhook de deploy configurado e testado
-[ ] Banco migrado (usuarios, cameras, gravacoes, embeddings)
-[ ] S3 configurado (opcional — ver docs/SETUP_S3_CONTABO.md)
-[ ] Monitoramento mostrando dados (pagina /monitor)
+[ ] Webhook de deploy funcionando (curl localhost:9000/status)
+[ ] Monitoramento mostrando dados (/monitor)
 ```
 
 ### Testar fluxo completo
@@ -390,18 +166,7 @@ curl http://localhost:9000/status
 
 ---
 
-## Fase 10 — Desligar servidor antigo
-
-Depois que TUDO estiver validado no novo servidor:
-
-1. Verificar que nenhuma camera aponta para o IP antigo
-2. Manter o servidor antigo ligado por 48h como backup
-3. Fazer backup final do banco se necessario
-4. Desativar/cancelar o servidor antigo no painel Contabo
-
----
-
-## Resumo de enderecos
+## Resumo de enderecos (nao mudaram)
 
 | Servico | Endereco |
 |---------|----------|
