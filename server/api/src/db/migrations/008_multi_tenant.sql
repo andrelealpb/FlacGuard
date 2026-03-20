@@ -26,50 +26,64 @@ VALUES ('Happydo Mercadinhos', 'happydo', 'enterprise', 200, 1000)
 ON CONFLICT (slug) DO NOTHING;
 
 -- Add tenant_id to all main tables
--- Default to the Happydo tenant for existing data
+-- Use DO block with EXECUTE to set default from the resolved UUID
 DO $$
 DECLARE
-  default_tenant UUID;
+  tid UUID;
 BEGIN
-  SELECT id INTO default_tenant FROM tenants WHERE slug = 'happydo';
+  SELECT id INTO tid FROM tenants WHERE slug = 'happydo';
 
   -- PDVs
-  ALTER TABLE pdvs ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
-  UPDATE pdvs SET tenant_id = default_tenant WHERE tenant_id IS NULL;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='pdvs' AND column_name='tenant_id') THEN
+    EXECUTE format('ALTER TABLE pdvs ADD COLUMN tenant_id UUID REFERENCES tenants(id) DEFAULT %L', tid);
+  END IF;
+  UPDATE pdvs SET tenant_id = tid WHERE tenant_id IS NULL;
   ALTER TABLE pdvs ALTER COLUMN tenant_id SET NOT NULL;
-  ALTER TABLE pdvs ALTER COLUMN tenant_id SET DEFAULT default_tenant;
-  CREATE INDEX IF NOT EXISTS idx_pdvs_tenant ON pdvs(tenant_id);
+  EXECUTE format('ALTER TABLE pdvs ALTER COLUMN tenant_id SET DEFAULT %L', tid);
 
   -- Cameras
-  ALTER TABLE cameras ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
-  UPDATE cameras SET tenant_id = default_tenant WHERE tenant_id IS NULL;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='cameras' AND column_name='tenant_id') THEN
+    EXECUTE format('ALTER TABLE cameras ADD COLUMN tenant_id UUID REFERENCES tenants(id) DEFAULT %L', tid);
+  END IF;
+  UPDATE cameras SET tenant_id = tid WHERE tenant_id IS NULL;
   ALTER TABLE cameras ALTER COLUMN tenant_id SET NOT NULL;
-  ALTER TABLE cameras ALTER COLUMN tenant_id SET DEFAULT default_tenant;
-  CREATE INDEX IF NOT EXISTS idx_cameras_tenant ON cameras(tenant_id);
+  EXECUTE format('ALTER TABLE cameras ALTER COLUMN tenant_id SET DEFAULT %L', tid);
 
   -- Users
-  ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
-  UPDATE users SET tenant_id = default_tenant WHERE tenant_id IS NULL;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='tenant_id') THEN
+    EXECUTE format('ALTER TABLE users ADD COLUMN tenant_id UUID REFERENCES tenants(id) DEFAULT %L', tid);
+  END IF;
+  UPDATE users SET tenant_id = tid WHERE tenant_id IS NULL;
   ALTER TABLE users ALTER COLUMN tenant_id SET NOT NULL;
-  ALTER TABLE users ALTER COLUMN tenant_id SET DEFAULT default_tenant;
-  CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
+  EXECUTE format('ALTER TABLE users ALTER COLUMN tenant_id SET DEFAULT %L', tid);
 
   -- API Keys
-  ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
-  UPDATE api_keys SET tenant_id = default_tenant WHERE tenant_id IS NULL;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='api_keys' AND column_name='tenant_id') THEN
+    EXECUTE format('ALTER TABLE api_keys ADD COLUMN tenant_id UUID REFERENCES tenants(id) DEFAULT %L', tid);
+  END IF;
+  UPDATE api_keys SET tenant_id = tid WHERE tenant_id IS NULL;
   ALTER TABLE api_keys ALTER COLUMN tenant_id SET NOT NULL;
-  ALTER TABLE api_keys ALTER COLUMN tenant_id SET DEFAULT default_tenant;
+  EXECUTE format('ALTER TABLE api_keys ALTER COLUMN tenant_id SET DEFAULT %L', tid);
 
   -- Webhooks
-  ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
-  UPDATE webhooks SET tenant_id = default_tenant WHERE tenant_id IS NULL;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='webhooks' AND column_name='tenant_id') THEN
+    EXECUTE format('ALTER TABLE webhooks ADD COLUMN tenant_id UUID REFERENCES tenants(id) DEFAULT %L', tid);
+  END IF;
+  UPDATE webhooks SET tenant_id = tid WHERE tenant_id IS NULL;
   ALTER TABLE webhooks ALTER COLUMN tenant_id SET NOT NULL;
-  ALTER TABLE webhooks ALTER COLUMN tenant_id SET DEFAULT default_tenant;
+  EXECUTE format('ALTER TABLE webhooks ALTER COLUMN tenant_id SET DEFAULT %L', tid);
 
   -- Face watchlist
-  ALTER TABLE face_watchlist ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
-  UPDATE face_watchlist SET tenant_id = default_tenant WHERE tenant_id IS NULL;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='face_watchlist' AND column_name='tenant_id') THEN
+    EXECUTE format('ALTER TABLE face_watchlist ADD COLUMN tenant_id UUID REFERENCES tenants(id) DEFAULT %L', tid);
+  END IF;
+  UPDATE face_watchlist SET tenant_id = tid WHERE tenant_id IS NULL;
   ALTER TABLE face_watchlist ALTER COLUMN tenant_id SET NOT NULL;
-  ALTER TABLE face_watchlist ALTER COLUMN tenant_id SET DEFAULT default_tenant;
-  CREATE INDEX IF NOT EXISTS idx_watchlist_tenant ON face_watchlist(tenant_id);
+  EXECUTE format('ALTER TABLE face_watchlist ALTER COLUMN tenant_id SET DEFAULT %L', tid);
 END $$;
+
+-- Create indexes outside DO block
+CREATE INDEX IF NOT EXISTS idx_pdvs_tenant ON pdvs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_cameras_tenant ON cameras(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_watchlist_tenant ON face_watchlist(tenant_id);
