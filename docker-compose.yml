@@ -31,7 +31,7 @@ services:
       - S3_BUCKET=${S3_BUCKET:-}
       - S3_ACCESS_KEY=${S3_ACCESS_KEY:-}
       - S3_SECRET_KEY=${S3_SECRET_KEY:-}
-      - S3_REGION=${S3_REGION:-us-east-1}
+      - S3_REGION=${S3_REGION:-usc1}
       - S3_RECORDINGS_PREFIX=${S3_RECORDINGS_PREFIX:-recordings}
       - S3_FACES_PREFIX=${S3_FACES_PREFIX:-faces}
       - S3_WATCHLIST_PREFIX=${S3_WATCHLIST_PREFIX:-watchlist}

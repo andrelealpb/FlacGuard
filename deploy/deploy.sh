@@ -85,7 +85,10 @@ for SERVICE in $SERVICES; do
   echo "$LOG_PREFIX Building $SERVICE..."
   update_status "Build: $SERVICE"
   SERVICE_BUILD_START=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-  if timeout 300 docker compose build \
+  # face-service compiles insightface C++/Cython from source — needs much more time
+  BUILD_TIMEOUT=300
+  if [ "$SERVICE" = "face-service" ]; then BUILD_TIMEOUT=900; fi
+  if timeout $BUILD_TIMEOUT docker compose build \
     --build-arg "BUILD_COMMIT=$COMMIT_HASH" \
     --build-arg "BUILD_BRANCH=$BRANCH" \
     --build-arg "BUILD_TIMESTAMP=$BUILD_TIMESTAMP" \
