@@ -4,6 +4,7 @@ import { readFileSync, existsSync } from 'fs';
 import { pool } from '../db/pool.js';
 import { authenticate, authorize } from '../services/auth.js';
 import { isS3Configured } from '../services/storage.js';
+import { startMigration, getMigrationStatus, pauseMigration, resumeMigration, cancelMigration } from '../services/s3-migration.js';
 
 const router = Router();
 
@@ -299,9 +300,11 @@ router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
       local_size: 0,
       bucket_objects: 0,
       bucket_size: 0,
+      bucket_quota: parseInt(process.env.S3_QUOTA_GB || '250', 10) * 1024 * 1024 * 1024, // default 250GB
       endpoint: null,
       bucket: null,
       error: null,
+      migration: null,
     };
     if (s3Stats.configured) {
       s3Stats.endpoint = process.env.S3_ENDPOINT || null;
@@ -329,6 +332,9 @@ router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
         s3Stats.bucket_size = bucketInfo.size;
         s3Stats.error = bucketInfo.error;
       } catch { s3Stats.status = 'error'; }
+
+      // Include migration status
+      s3Stats.migration = getMigrationStatus();
     }
 
     // Face embeddings count
@@ -478,6 +484,38 @@ router.get('/s3', authenticate, authorize('admin'), async (_req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// POST /api/monitor/s3/migrate — Start S3 migration
+router.post('/s3/migrate', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { concurrency = 5, delete_local = true } = req.body || {};
+    const result = await startMigration({ concurrency, deleteLocal: delete_local });
+    if (result.error) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/monitor/s3/migrate — Get migration status
+router.get('/s3/migrate', authenticate, authorize('admin'), (_req, res) => {
+  res.json(getMigrationStatus());
+});
+
+// POST /api/monitor/s3/migrate/pause — Pause migration
+router.post('/s3/migrate/pause', authenticate, authorize('admin'), (_req, res) => {
+  res.json({ success: pauseMigration() });
+});
+
+// POST /api/monitor/s3/migrate/resume — Resume migration
+router.post('/s3/migrate/resume', authenticate, authorize('admin'), (_req, res) => {
+  res.json({ success: resumeMigration() });
+});
+
+// POST /api/monitor/s3/migrate/cancel — Cancel migration
+router.post('/s3/migrate/cancel', authenticate, authorize('admin'), (_req, res) => {
+  res.json({ success: cancelMigration() });
 });
 
 // POST /api/monitor/cleanup — Run Docker cleanup to free disk space

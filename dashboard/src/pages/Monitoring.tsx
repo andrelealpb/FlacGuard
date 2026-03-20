@@ -30,9 +30,26 @@ interface SystemStats {
     local_size: number;
     bucket_objects: number;
     bucket_size: number;
+    bucket_quota: number;
     endpoint: string | null;
     bucket: string | null;
     error: string | null;
+    migration: {
+      running: boolean;
+      paused: boolean;
+      total: number;
+      completed: number;
+      failed: number;
+      skipped: number;
+      bytes_uploaded: number;
+      elapsed_seconds: number;
+      speed_mbps: number;
+      remaining: number;
+      percent: number;
+      current_file: string | null;
+      errors: { id: number; file: string; error: string }[];
+      delete_local: boolean;
+    } | null;
   };
   disk_breakdown?: DiskBreakdownItem[];
   docker_disk?: { images: any[]; containers: any[] } | null;
@@ -401,79 +418,209 @@ function Monitoring() {
       </div>
 
       {/* S3 Storage */}
-      <div style={{ ...card, marginTop: "0.75rem" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-          <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>Object Storage (S3)</div>
-          <span style={{
-            fontSize: "0.65rem", padding: "0.15rem 0.5rem", borderRadius: "10px", fontWeight: 600,
-            background: stats.s3?.status === 'healthy' ? "#e8f5e9" : stats.s3?.configured ? "#ffebee" : "#fff3e0",
-            color: stats.s3?.status === 'healthy' ? "#2e7d32" : stats.s3?.configured ? "#c62828" : "#e65100",
-          }}>
-            {stats.s3?.status === 'healthy' ? "Conectado" : stats.s3?.configured ? "Erro" : "Não configurado"}
-          </span>
-        </div>
-        {stats.s3?.configured ? (
-          <div style={{ fontSize: "0.7rem", color: "#666" }}>
-            <div style={{ marginBottom: "0.3rem" }}>
-              <strong>Endpoint:</strong> {stats.s3.endpoint} | <strong>Bucket:</strong> {stats.s3.bucket}
-            </div>
+      <S3Card stats={stats} apiFetch={apiFetch} />
+    </div>
+  );
+}
 
-            {/* S3 error */}
-            {stats.s3.error && (
-              <div style={{
-                marginBottom: "0.4rem", padding: "0.3rem 0.5rem", borderRadius: "4px",
-                background: "#ffebee", color: "#c62828", fontSize: "0.65rem",
-              }}>
-                Erro S3: {stats.s3.error}
-              </div>
-            )}
+function S3Card({ stats, apiFetch }: { stats: SystemStats; apiFetch: (url: string, opts?: any) => Promise<Response> }) {
+  const [migrating, setMigrating] = useState(false);
+  const [migrationMsg, setMigrationMsg] = useState("");
 
-            {/* Bucket usage */}
-            <div style={{
-              display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem",
-              marginBottom: "0.4rem", padding: "0.4rem", background: "#f5f5f5", borderRadius: "4px",
-            }}>
-              <div>
-                <div style={{ fontSize: "0.6rem", color: "#999" }}>Armazenamento S3</div>
-                <div style={{ fontSize: "1rem", fontWeight: 700, color: "#1565c0" }}>
-                  {formatBytes(stats.s3.bucket_size || 0)}
-                </div>
-                <div style={{ fontSize: "0.6rem", color: "#999" }}>{stats.s3.bucket_objects || 0} objetos no bucket</div>
-              </div>
-              <div>
-                <div style={{ fontSize: "0.6rem", color: "#999" }}>Armazenamento local</div>
-                <div style={{ fontSize: "1rem", fontWeight: 700, color: "#e65100" }}>
-                  {formatBytes(stats.s3.local_size || 0)}
-                </div>
-                <div style={{ fontSize: "0.6rem", color: "#999" }}>{stats.s3.recordings_local || 0} gravações no disco</div>
-              </div>
-            </div>
+  const startMigration = async () => {
+    if (!confirm("Iniciar migração de todas as gravações locais para o S3? Os arquivos locais serão removidos após upload bem-sucedido.")) return;
+    setMigrating(true);
+    setMigrationMsg("");
+    try {
+      const res = await apiFetch("/api/monitor/s3/migrate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ concurrency: 5, delete_local: true }),
+      });
+      const data = await res.json();
+      if (data.error) setMigrationMsg(data.error);
+      else setMigrationMsg(data.message);
+    } catch (err) {
+      setMigrationMsg(err instanceof Error ? err.message : "Erro");
+    } finally {
+      setMigrating(false);
+    }
+  };
 
-            {/* Migration progress */}
-            <div style={{ display: "flex", gap: "1.5rem", marginBottom: "0.3rem" }}>
-              <div>
-                <span style={{ fontWeight: 600, color: "#2e7d32" }}>{stats.s3.recordings_in_s3}</span> gravações no S3
-              </div>
-              <div>
-                <span style={{ fontWeight: 600, color: "#e65100" }}>{stats.s3.recordings_local}</span> gravações locais
-              </div>
-            </div>
-            {(stats.s3.recordings_local > 0 || stats.s3.recordings_in_s3 > 0) && (
-              <Gauge
-                value={stats.s3.recordings_in_s3}
-                max={stats.s3.recordings_in_s3 + stats.s3.recordings_local}
-                label="Migração para S3"
-                color="#2e7d32"
-                detail={`${(stats.s3.recordings_in_s3 + stats.s3.recordings_local) > 0 ? Math.round((stats.s3.recordings_in_s3 / (stats.s3.recordings_in_s3 + stats.s3.recordings_local)) * 100) : 0}%`}
-              />
-            )}
-          </div>
-        ) : (
-          <div style={{ fontSize: "0.7rem", color: "#999" }}>
-            Gravações armazenadas no disco local. Configure as variáveis S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY e S3_SECRET_KEY para ativar.
-          </div>
-        )}
+  const migrationAction = async (action: "pause" | "resume" | "cancel") => {
+    try {
+      await apiFetch(`/api/monitor/s3/migrate/${action}`, { method: "POST" });
+    } catch { /* ignore */ }
+  };
+
+  const s3 = stats.s3;
+  const mig = s3?.migration;
+
+  return (
+    <div style={{ ...card, marginTop: "0.75rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+        <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>Object Storage (S3)</div>
+        <span style={{
+          fontSize: "0.65rem", padding: "0.15rem 0.5rem", borderRadius: "10px", fontWeight: 600,
+          background: s3?.status === 'healthy' ? "#e8f5e9" : s3?.configured ? "#ffebee" : "#fff3e0",
+          color: s3?.status === 'healthy' ? "#2e7d32" : s3?.configured ? "#c62828" : "#e65100",
+        }}>
+          {s3?.status === 'healthy' ? "Conectado" : s3?.configured ? "Erro" : "Não configurado"}
+        </span>
       </div>
+      {s3?.configured ? (
+        <div style={{ fontSize: "0.7rem", color: "#666" }}>
+          <div style={{ marginBottom: "0.3rem" }}>
+            <strong>Endpoint:</strong> {s3.endpoint} | <strong>Bucket:</strong> {s3.bucket}
+          </div>
+
+          {/* S3 error */}
+          {s3.error && (
+            <div style={{
+              marginBottom: "0.4rem", padding: "0.3rem 0.5rem", borderRadius: "4px",
+              background: "#ffebee", color: "#c62828", fontSize: "0.65rem",
+            }}>
+              Erro S3: {s3.error}
+            </div>
+          )}
+
+          {/* S3 quota gauge (like VPS disk) */}
+          {s3.bucket_quota > 0 && (
+            <Gauge
+              value={s3.bucket_size || 0}
+              max={s3.bucket_quota}
+              label="Espaço S3"
+              color="#1565c0"
+              detail={`${formatBytes(s3.bucket_size || 0)} / ${formatBytes(s3.bucket_quota)}`}
+            />
+          )}
+
+          {/* Bucket usage grid */}
+          <div style={{
+            display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem",
+            marginBottom: "0.4rem", padding: "0.4rem", background: "#f5f5f5", borderRadius: "4px",
+          }}>
+            <div>
+              <div style={{ fontSize: "0.6rem", color: "#999" }}>Armazenamento S3</div>
+              <div style={{ fontSize: "1rem", fontWeight: 700, color: "#1565c0" }}>
+                {formatBytes(s3.bucket_size || 0)}
+              </div>
+              <div style={{ fontSize: "0.6rem", color: "#999" }}>{s3.bucket_objects || 0} objetos no bucket</div>
+            </div>
+            <div>
+              <div style={{ fontSize: "0.6rem", color: "#999" }}>Armazenamento local</div>
+              <div style={{ fontSize: "1rem", fontWeight: 700, color: "#e65100" }}>
+                {formatBytes(s3.local_size || 0)}
+              </div>
+              <div style={{ fontSize: "0.6rem", color: "#999" }}>{s3.recordings_local || 0} gravações no disco</div>
+            </div>
+          </div>
+
+          {/* Migration progress */}
+          <div style={{ display: "flex", gap: "1.5rem", marginBottom: "0.3rem" }}>
+            <div>
+              <span style={{ fontWeight: 600, color: "#2e7d32" }}>{s3.recordings_in_s3}</span> gravações no S3
+            </div>
+            <div>
+              <span style={{ fontWeight: 600, color: "#e65100" }}>{s3.recordings_local}</span> gravações locais
+            </div>
+          </div>
+          {(s3.recordings_local > 0 || s3.recordings_in_s3 > 0) && (
+            <Gauge
+              value={s3.recordings_in_s3}
+              max={s3.recordings_in_s3 + s3.recordings_local}
+              label="Migração para S3"
+              color="#2e7d32"
+              detail={`${(s3.recordings_in_s3 + s3.recordings_local) > 0 ? Math.round((s3.recordings_in_s3 / (s3.recordings_in_s3 + s3.recordings_local)) * 100) : 0}%`}
+            />
+          )}
+
+          {/* Active migration status */}
+          {mig?.running && (
+            <div style={{
+              marginTop: "0.5rem", padding: "0.5rem", borderRadius: "4px",
+              background: mig.paused ? "#fff3e0" : "#e3f2fd", fontSize: "0.7rem",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.3rem" }}>
+                <strong>{mig.paused ? "Migração pausada" : "Migrando..."}</strong>
+                <span style={{ color: "#999" }}>
+                  {mig.speed_mbps.toFixed(1)} MB/s | {mig.elapsed_seconds}s
+                </span>
+              </div>
+              <Gauge
+                value={mig.completed + mig.skipped}
+                max={mig.total}
+                label={mig.current_file || "Processando..."}
+                color="#1565c0"
+                detail={`${mig.completed}/${mig.total} (${mig.percent}%)`}
+              />
+              <div style={{ fontSize: "0.6rem", color: "#999", marginBottom: "0.3rem" }}>
+                Enviados: {formatBytes(mig.bytes_uploaded)} | Falhas: {mig.failed} | Ignorados: {mig.skipped}
+              </div>
+              <div style={{ display: "flex", gap: "0.3rem" }}>
+                {!mig.paused ? (
+                  <button onClick={() => migrationAction("pause")} style={{
+                    fontSize: "0.65rem", padding: "0.2rem 0.5rem", borderRadius: "4px",
+                    border: "1px solid #ff9800", background: "#fff3e0", color: "#e65100",
+                    cursor: "pointer", fontWeight: 600,
+                  }}>Pausar</button>
+                ) : (
+                  <button onClick={() => migrationAction("resume")} style={{
+                    fontSize: "0.65rem", padding: "0.2rem 0.5rem", borderRadius: "4px",
+                    border: "1px solid #2e7d32", background: "#e8f5e9", color: "#2e7d32",
+                    cursor: "pointer", fontWeight: 600,
+                  }}>Retomar</button>
+                )}
+                <button onClick={() => { if (confirm("Cancelar migração?")) migrationAction("cancel"); }} style={{
+                  fontSize: "0.65rem", padding: "0.2rem 0.5rem", borderRadius: "4px",
+                  border: "1px solid #c62828", background: "#ffebee", color: "#c62828",
+                  cursor: "pointer", fontWeight: 600,
+                }}>Cancelar</button>
+              </div>
+              {mig.errors.length > 0 && (
+                <div style={{ marginTop: "0.3rem", fontSize: "0.6rem", color: "#c62828" }}>
+                  Erros recentes: {mig.errors.slice(-3).map(e => e.file).join(", ")}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Start migration button (only if not running and there are local recordings) */}
+          {!mig?.running && s3.recordings_local > 0 && (
+            <div style={{ marginTop: "0.5rem" }}>
+              <button
+                onClick={startMigration}
+                disabled={migrating}
+                style={{
+                  fontSize: "0.7rem", padding: "0.3rem 0.8rem", borderRadius: "4px",
+                  border: "1px solid #1565c0", background: migrating ? "#ccc" : "#e3f2fd",
+                  color: "#1565c0", cursor: migrating ? "not-allowed" : "pointer", fontWeight: 600,
+                }}
+              >
+                {migrating ? "Iniciando..." : `Migrar ${s3.recordings_local} gravações para S3`}
+              </button>
+              {migrationMsg && (
+                <span style={{ marginLeft: "0.5rem", fontSize: "0.65rem", color: "#666" }}>{migrationMsg}</span>
+              )}
+            </div>
+          )}
+
+          {/* Migration completed summary */}
+          {mig && !mig.running && mig.total > 0 && (
+            <div style={{
+              marginTop: "0.5rem", padding: "0.4rem", borderRadius: "4px",
+              background: "#e8f5e9", fontSize: "0.65rem", color: "#2e7d32",
+            }}>
+              Migração concluída: {mig.completed} enviados, {mig.failed} falhas, {mig.skipped} ignorados
+              ({formatBytes(mig.bytes_uploaded)} em {mig.elapsed_seconds}s)
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ fontSize: "0.7rem", color: "#999" }}>
+          Gravações armazenadas no disco local. Configure as variáveis S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY e S3_SECRET_KEY para ativar.
+        </div>
+      )}
     </div>
   );
 }
