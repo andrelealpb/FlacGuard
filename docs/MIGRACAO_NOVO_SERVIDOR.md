@@ -1,14 +1,17 @@
 # Checklist de Upgrade — VPS Contabo (In-Place)
 
-**Servidor:** Cloud VPS 20 NVMe — IP `147.93.7.251` (Carlstadt, US East)
-**Tipo:** Upgrade in-place (mesmo servidor, mesmo IP)
-**De:** Cloud VPS 10 NVMe (4 cores, 8GB RAM, 75GB NVMe)
-**Para:** Cloud VPS 20 NVMe (6 cores, 12GB RAM, 100GB NVMe)
+**Servidor:** Cloud VPS 20 NVMe — IP `147.93.141.133` (Carlstadt, US East)
+**Tipo:** Migração para novo servidor
+**De:** Cloud VPS 10 NVMe (4 cores, 8GB RAM, 75GB NVMe) — IP antigo: 147.93.7.251
+**Para:** Cloud VPS 20 NVMe (6 cores, 12GB RAM, 100GB NVMe) — IP novo: 147.93.141.133
 **OS:** Ubuntu 24.04
-**VNC:** `144.126.149.10:63315`
 
-> **Nota:** Como o endereco do servidor nao muda, as cameras, DNS e webhooks
-> continuam funcionando sem nenhuma alteracao.
+> **Nota:** O servidor foi migrado para novo IP. DNS atualizado com subdomínios:
+> - `guard.flactech.com.br` → Dashboard
+> - `api-guard.flactech.com.br` → API
+> - `rtmp-guard.flactech.com.br` → RTMP (câmeras)
+> - `hls-guard.flactech.com.br` → HLS (playback)
+> - `ssh-guard.flactech.com.br` → SSH
 
 ---
 
@@ -17,7 +20,7 @@
 ### 1.1 Fazer backup do banco
 
 ```bash
-ssh root@147.93.7.251
+ssh root@ssh-guard.flactech.com.br
 cd /opt/FlacGuard
 
 # Backup do banco
@@ -32,7 +35,7 @@ docker volume ls | grep flac-guard
 
 ### 1.2 Realizar o upgrade no painel
 
-1. Acessar painel Contabo → VPS → Cloud VPS 10 NVMe (147.93.7.251)
+1. Acessar painel Contabo → VPS → Cloud VPS 20 NVMe (147.93.141.133)
 2. Clicar "Upgrade" → Cloud VPS 20 NVMe ($10.75/mes)
 3. Aguardar (o VPS sera reiniciado automaticamente)
 
@@ -43,7 +46,7 @@ docker volume ls | grep flac-guard
 ### 2.1 Verificar acesso
 
 ```bash
-ssh root@147.93.7.251
+ssh root@ssh-guard.flactech.com.br
 
 # Verificar novos recursos
 nproc           # Deve mostrar 6
@@ -132,7 +135,7 @@ docker compose up -d
 ### Checklist
 
 ```
-[ ] SSH funcionando (ssh root@147.93.7.251)
+[ ] SSH funcionando (ssh root@ssh-guard.flactech.com.br)
 [ ] CPU: 6 cores (nproc)
 [ ] RAM: ~12GB (free -h)
 [ ] Disco: ~100GB NVMe (df -h /)
@@ -170,13 +173,12 @@ curl http://localhost:9000/status
 
 | Servico | Endereco |
 |---------|----------|
-| SSH | `root@147.93.7.251` |
-| VNC | `144.126.149.10:63315` |
+| SSH | `root@ssh-guard.flactech.com.br` |
 | Dashboard | `https://guard.flactech.com.br` |
-| API | `https://guard.flactech.com.br/api` |
-| RTMP (cameras) | `rtmp://guard.flactech.com.br:1935/live/<key>` |
-| HLS (playback) | `https://guard.flactech.com.br/hls/<key>/index.m3u8` |
-| Webhook | `http://147.93.7.251:9000/webhook` |
+| API | `https://api-guard.flactech.com.br` |
+| RTMP (cameras) | `rtmp://rtmp-guard.flactech.com.br:1935/live/<key>` |
+| HLS (playback) | `https://hls-guard.flactech.com.br/hls/<key>/index.m3u8` |
+| Webhook | `https://api-guard.flactech.com.br/webhook` |
 
 ---
 
@@ -191,7 +193,7 @@ ss -tlnp | grep 1935
 sudo ufw status | grep 1935
 
 # Testar de fora
-nc -zv 147.93.7.251 1935
+nc -zv rtmp-guard.flactech.com.br 1935
 ```
 
 ### Dashboard nao abre
