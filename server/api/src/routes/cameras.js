@@ -4,6 +4,7 @@ import { pool } from '../db/pool.js';
 import { authenticate } from '../services/auth.js';
 import { generateStreamKey, getHlsUrl, getRtmpUrl, getRtmpPublicUrl, getHlsPublicUrl } from '../services/rtmp.js';
 import { findRecordingByTimestamp, listRecordings } from '../services/recording.js';
+import { getTenantId, getTenantSlug } from '../services/tenant.js';
 
 const router = Router();
 
@@ -18,9 +19,10 @@ function groupFromModel(model) {
 router.get('/', authenticate, async (req, res) => {
   try {
     const { pdv_id, status, model, camera_purpose } = req.query;
-    const conditions = [];
-    const params = [];
-    let idx = 1;
+    const tenantId = getTenantId(req);
+    const conditions = [`c.tenant_id = $1`];
+    const params = [tenantId];
+    let idx = 2;
 
     if (pdv_id) {
       conditions.push(`c.pdv_id = $${idx++}`);
@@ -77,11 +79,14 @@ router.get('/models', authenticate, (_req, res) => {
 });
 
 // GET /api/cameras/stream-names — Map stream keys to camera names (for RTMP stats)
-router.get('/stream-names', authenticate, async (_req, res) => {
+router.get('/stream-names', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { rows } = await pool.query(
       `SELECT stream_key, c.name, c.id as camera_id, p.name as pdv_name
-       FROM cameras c LEFT JOIN pdvs p ON c.pdv_id = p.id`
+       FROM cameras c LEFT JOIN pdvs p ON c.pdv_id = p.id
+       WHERE c.tenant_id = $1`,
+      [tenantId]
     );
     const map = {};
     for (const row of rows) {
@@ -98,11 +103,15 @@ router.get('/stream-names', authenticate, async (_req, res) => {
 });
 
 // GET /api/cameras/disk-usage — Disk usage per camera (recordings + faces)
-router.get('/disk-usage', authenticate, async (_req, res) => {
+router.get('/disk-usage', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     // Backfill any recordings missing file_size
     const { rows: missing } = await pool.query(
-      'SELECT id, file_path FROM recordings WHERE file_size IS NULL OR file_size = 0'
+      `SELECT r.id, r.file_path FROM recordings r
+       JOIN cameras c ON r.camera_id = c.id
+       WHERE (r.file_size IS NULL OR r.file_size = 0) AND c.tenant_id = $1`,
+      [tenantId]
     );
     if (missing.length > 0) {
       let fixed = 0;
@@ -127,12 +136,17 @@ router.get('/disk-usage', authenticate, async (_req, res) => {
               COUNT(r.id)::int as recording_count
        FROM cameras c
        LEFT JOIN recordings r ON r.camera_id = c.id
-       GROUP BY c.id, c.name, c.retention_days`
+       WHERE c.tenant_id = $1
+       GROUP BY c.id, c.name, c.retention_days`,
+      [tenantId]
     );
 
     // Face image sizes per camera — scan face_image paths on disk
     const { rows: faceRows } = await pool.query(
-      `SELECT camera_id, face_image FROM face_embeddings WHERE face_image IS NOT NULL`
+      `SELECT fe.camera_id, fe.face_image FROM face_embeddings fe
+       JOIN cameras c ON fe.camera_id = c.id
+       WHERE fe.face_image IS NOT NULL AND c.tenant_id = $1`,
+      [tenantId]
     );
     const faceSizeMap = {};   // camera_id -> { bytes, count }
     for (const f of faceRows) {
@@ -148,8 +162,12 @@ router.get('/disk-usage', authenticate, async (_req, res) => {
 
     // Oldest recording per camera
     const { rows: oldestRows } = await pool.query(
-      `SELECT camera_id, MIN(started_at) as oldest_recording_at
-       FROM recordings GROUP BY camera_id`
+      `SELECT r.camera_id, MIN(r.started_at) as oldest_recording_at
+       FROM recordings r
+       JOIN cameras c ON r.camera_id = c.id
+       WHERE c.tenant_id = $1
+       GROUP BY r.camera_id`,
+      [tenantId]
     );
     const oldestMap = {};
     for (const o of oldestRows) {
@@ -205,25 +223,28 @@ router.post('/', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'camera_purpose must be "environment" or "face"' });
     }
 
-    // Verify PDV exists
-    const pdvCheck = await pool.query('SELECT id FROM pdvs WHERE id = $1', [pdv_id]);
+    const tenantId = getTenantId(req);
+
+    // Verify PDV exists and belongs to same tenant
+    const pdvCheck = await pool.query('SELECT id FROM pdvs WHERE id = $1 AND tenant_id = $2', [pdv_id, tenantId]);
     if (pdvCheck.rows.length === 0) {
       return res.status(400).json({ error: 'PDV not found' });
     }
 
-    const streamKey = generateStreamKey();
+    const tenantSlug = await getTenantSlug(tenantId);
+    const streamKey = generateStreamKey(tenantSlug);
     const camera_group = groupFromModel(model);
     const purposeVal = camera_purpose || 'environment';
     const captureFaceVal = capture_face !== undefined ? capture_face : true;
 
     const { rows } = await pool.query(
-      `INSERT INTO cameras (name, stream_key, model, camera_group, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity, storage_quota_gb, camera_purpose, capture_face)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      `INSERT INTO cameras (name, stream_key, model, camera_group, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity, storage_quota_gb, camera_purpose, capture_face, tenant_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING *`,
       [name, streamKey, model, camera_group, location_description, pdv_id,
        recording_mode || 'continuous', retention_days || 21, motion_sensitivity || 5,
        storage_quota_gb != null ? storage_quota_gb : null,
-       purposeVal, captureFaceVal]
+       purposeVal, captureFaceVal, tenantId]
     );
     const camera = rows[0];
     res.status(201).json({
@@ -241,11 +262,12 @@ router.post('/', authenticate, async (req, res) => {
 // GET /api/cameras/:id — Camera details
 router.get('/:id', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { rows } = await pool.query(
       `SELECT c.*, p.name as pdv_name, p.code as pdv_code
        FROM cameras c LEFT JOIN pdvs p ON c.pdv_id = p.id
-       WHERE c.id = $1`,
-      [req.params.id]
+       WHERE c.id = $1 AND c.tenant_id = $2`,
+      [req.params.id, tenantId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
     const camera = rows[0];
@@ -269,8 +291,9 @@ router.patch('/:id', authenticate, async (req, res) => {
     if (model && !VALID_MODELS.includes(model)) {
       return res.status(400).json({ error: `Invalid model. Must be one of: ${VALID_MODELS.join(', ')}` });
     }
+    const tenantId = getTenantId(req);
     if (pdv_id) {
-      const pdvCheck = await pool.query('SELECT id FROM pdvs WHERE id = $1', [pdv_id]);
+      const pdvCheck = await pool.query('SELECT id FROM pdvs WHERE id = $1 AND tenant_id = $2', [pdv_id, tenantId]);
       if (pdvCheck.rows.length === 0) {
         return res.status(400).json({ error: 'PDV not found' });
       }
@@ -323,8 +346,9 @@ router.patch('/:id', authenticate, async (req, res) => {
       sets.push(`capture_face = $${params.length}`);
     }
 
+    params.push(tenantId);
     const { rows } = await pool.query(
-      `UPDATE cameras SET ${sets.join(', ')} WHERE id = $1 RETURNING *`,
+      `UPDATE cameras SET ${sets.join(', ')} WHERE id = $1 AND tenant_id = $${params.length} RETURNING *`,
       params
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
@@ -337,6 +361,12 @@ router.patch('/:id', authenticate, async (req, res) => {
 // DELETE /api/cameras/:id — Remove camera
 router.delete('/:id', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
+
+    // Verify camera belongs to tenant
+    const camCheck = await pool.query('SELECT id FROM cameras WHERE id = $1 AND tenant_id = $2', [req.params.id, tenantId]);
+    if (camCheck.rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
+
     // Check if camera has recordings
     const recCheck = await pool.query(
       'SELECT COUNT(*) as count FROM recordings WHERE camera_id = $1',
@@ -352,8 +382,8 @@ router.delete('/:id', authenticate, async (req, res) => {
     await pool.query('DELETE FROM events WHERE camera_id = $1', [req.params.id]);
 
     const { rows } = await pool.query(
-      'DELETE FROM cameras WHERE id = $1 RETURNING *',
-      [req.params.id]
+      'DELETE FROM cameras WHERE id = $1 AND tenant_id = $2 RETURNING *',
+      [req.params.id, tenantId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
     res.json({ message: 'Camera deleted', camera: rows[0] });
@@ -365,7 +395,8 @@ router.delete('/:id', authenticate, async (req, res) => {
 // GET /api/cameras/:id/live — HLS stream URL
 router.get('/:id/live', authenticate, async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT stream_key, status FROM cameras WHERE id = $1', [req.params.id]);
+    const tenantId = getTenantId(req);
+    const { rows } = await pool.query('SELECT stream_key, status FROM cameras WHERE id = $1 AND tenant_id = $2', [req.params.id, tenantId]);
     if (rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
     const { stream_key, status } = rows[0];
     res.json({
@@ -415,7 +446,8 @@ router.get('/:id/recording', authenticate, async (req, res) => {
 // GET /api/cameras/:id/snapshot — Current frame (JPEG)
 router.get('/:id/snapshot', authenticate, async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT stream_key, status FROM cameras WHERE id = $1', [req.params.id]);
+    const tenantId = getTenantId(req);
+    const { rows } = await pool.query('SELECT stream_key, status FROM cameras WHERE id = $1 AND tenant_id = $2', [req.params.id, tenantId]);
     if (rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
     if (rows[0].status !== 'online') {
       return res.status(503).json({ error: 'Camera is offline' });

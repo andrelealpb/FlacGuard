@@ -1,5 +1,6 @@
 import { pool } from '../db/pool.js';
 import { unlinkSync, existsSync } from 'fs';
+import { deleteObject } from './storage.js';
 
 /**
  * Delete recordings older than a specific camera's retention_days setting.
@@ -47,7 +48,7 @@ async function deleteOldRecordings(camera) {
 
   try {
     const { rows: oldRecordings } = await pool.query(
-      `SELECT id, file_path, file_size, thumbnail_path
+      `SELECT id, file_path, file_size, thumbnail_path, s3_key
        FROM recordings
        WHERE camera_id = $1
          AND started_at < now() - ($2 || ' days')::interval`,
@@ -56,6 +57,11 @@ async function deleteOldRecordings(camera) {
 
     for (const recording of oldRecordings) {
       try {
+        // Delete from S3 if stored there
+        if (recording.s3_key) {
+          await deleteObject(recording.s3_key);
+        }
+        // Delete local file if exists
         if (recording.file_path && existsSync(recording.file_path)) {
           unlinkSync(recording.file_path);
         }
@@ -83,7 +89,7 @@ async function deleteOldRecordings(camera) {
   // NOTE: Watchlist entries are NEVER auto-deleted (permanent)
   try {
     const { rows: oldFaces } = await pool.query(
-      `SELECT id, face_image
+      `SELECT id, face_image, face_image_s3_key
        FROM face_embeddings
        WHERE camera_id = $1
          AND detected_at < now() - ($2 || ' days')::interval`,
@@ -92,7 +98,11 @@ async function deleteOldRecordings(camera) {
 
     let facesDeleted = 0;
     for (const face of oldFaces) {
-      // Delete face crop image file
+      // Delete from S3 if stored there
+      if (face.face_image_s3_key) {
+        await deleteObject(face.face_image_s3_key);
+      }
+      // Delete local face crop image file
       if (face.face_image && existsSync(face.face_image)) {
         try { unlinkSync(face.face_image); } catch { /* ok */ }
       }

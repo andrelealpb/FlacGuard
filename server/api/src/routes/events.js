@@ -1,16 +1,18 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { authenticate } from '../services/auth.js';
+import { getTenantId } from '../services/tenant.js';
 
 const router = Router();
 
 // GET /api/events — List events (motion, offline, online, error, ai_alert)
 router.get('/', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { camera_id, pdv_id, type, from, to, limit = 50, offset = 0 } = req.query;
-    const conditions = [];
-    const params = [];
-    let idx = 1;
+    const conditions = ['c.tenant_id = $1'];
+    const params = [tenantId];
+    let idx = 2;
 
     if (camera_id) {
       conditions.push(`e.camera_id = $${idx++}`);

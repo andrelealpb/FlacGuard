@@ -1,16 +1,18 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { authenticate, authorize } from '../services/auth.js';
+import { getTenantId } from '../services/tenant.js';
 
 const router = Router();
 
 // GET /api/alerts — List system alerts (newest first)
 router.get('/', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { resolved, type, limit = 50 } = req.query;
-    const conditions = [];
-    const params = [];
-    let idx = 1;
+    const conditions = ['c.tenant_id = $1'];
+    const params = [tenantId];
+    let idx = 2;
 
     if (resolved !== undefined) {
       conditions.push(`a.resolved = $${idx++}`);
@@ -38,15 +40,19 @@ router.get('/', authenticate, async (req, res) => {
 });
 
 // GET /api/alerts/active-count — Count of unresolved alerts (for badge)
-router.get('/active-count', authenticate, async (_req, res) => {
+router.get('/active-count', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { rows } = await pool.query(
       `SELECT
          COUNT(*) FILTER (WHERE severity = 'critical')::int as critical,
          COUNT(*) FILTER (WHERE severity = 'warning')::int as warning,
          COUNT(*) FILTER (WHERE severity = 'info')::int as info,
          COUNT(*)::int as total
-       FROM system_alerts WHERE resolved = false`
+       FROM system_alerts a
+       LEFT JOIN cameras c ON a.camera_id = c.id
+       WHERE a.resolved = false AND (c.tenant_id = $1 OR a.camera_id IS NULL)`,
+      [tenantId]
     );
     res.json(rows[0]);
   } catch (err) {

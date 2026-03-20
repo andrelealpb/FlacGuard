@@ -5,16 +5,19 @@ import { pool } from '../db/pool.js';
 import { authenticate, authorize } from '../services/auth.js';
 import { cleanupCamera, cleanupAllCameras } from '../services/cleanup.js';
 import { detectFaces, searchFace } from '../services/face-recognition.js';
+import { getTenantId } from '../services/tenant.js';
+import { getPresignedUrl } from '../services/storage.js';
 
 const router = Router();
 
 // GET /api/recordings — List all recordings (with filters)
 router.get('/', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { camera_id, from, to, limit = 50, offset = 0 } = req.query;
-    const conditions = [];
-    const params = [];
-    let idx = 1;
+    const conditions = ['c.tenant_id = $1'];
+    const params = [tenantId];
+    let idx = 2;
 
     if (camera_id) {
       conditions.push(`r.camera_id = $${idx++}`);
@@ -55,6 +58,7 @@ router.get('/by-day', authenticate, async (req, res) => {
     const dayStart = `${date} 00:00:00`;
     const dayEnd = `${date} 23:59:59`;
 
+    const tenantId = getTenantId(req);
     const { rows } = await pool.query(
       `SELECT r.id, r.file_path, r.file_size, r.duration, r.started_at, r.ended_at,
               r.recording_type, r.thumbnail_path,
@@ -63,8 +67,9 @@ router.get('/by-day', authenticate, async (req, res) => {
        WHERE r.camera_id = $1
          AND r.started_at >= $2
          AND r.started_at <= $3
+         AND c.tenant_id = $4
        ORDER BY r.started_at ASC`,
-      [camera_id, dayStart, dayEnd]
+      [camera_id, dayStart, dayEnd, tenantId]
     );
     res.json(rows);
   } catch (err) {
@@ -75,11 +80,12 @@ router.get('/by-day', authenticate, async (req, res) => {
 // GET /api/recordings/:id — Get recording details
 router.get('/:id', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { rows } = await pool.query(
       `SELECT r.*, c.name as camera_name
        FROM recordings r JOIN cameras c ON r.camera_id = c.id
-       WHERE r.id = $1`,
-      [req.params.id]
+       WHERE r.id = $1 AND c.tenant_id = $2`,
+      [req.params.id, tenantId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Recording not found' });
     res.json(rows[0]);
@@ -91,11 +97,21 @@ router.get('/:id', authenticate, async (req, res) => {
 // GET /api/recordings/:id/stream — Stream/serve the recording MP4 file
 router.get('/:id/stream', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { rows } = await pool.query(
-      'SELECT file_path FROM recordings WHERE id = $1',
-      [req.params.id]
+      `SELECT r.file_path, r.s3_key FROM recordings r
+       JOIN cameras c ON r.camera_id = c.id
+       WHERE r.id = $1 AND c.tenant_id = $2`,
+      [req.params.id, tenantId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Recording not found' });
+
+    // If stored in S3, redirect to pre-signed URL
+    if (rows[0].s3_key) {
+      const url = await getPresignedUrl(rows[0].s3_key, 3600);
+      if (url) return res.redirect(302, url);
+      // Fallback to local if presigned URL fails
+    }
 
     const filePath = rows[0].file_path;
     if (!filePath || !existsSync(filePath)) {
@@ -139,9 +155,12 @@ router.get('/:id/stream', authenticate, async (req, res) => {
 // GET /api/recordings/:id/thumbnail — Serve or generate a thumbnail image for a recording
 router.get('/:id/thumbnail', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { rows } = await pool.query(
-      'SELECT file_path, thumbnail_path FROM recordings WHERE id = $1',
-      [req.params.id]
+      `SELECT r.file_path, r.thumbnail_path FROM recordings r
+       JOIN cameras c ON r.camera_id = c.id
+       WHERE r.id = $1 AND c.tenant_id = $2`,
+      [req.params.id, tenantId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Recording not found' });
 
@@ -192,14 +211,17 @@ router.get('/:id/thumbnail', authenticate, async (req, res) => {
 // Returns bounding boxes (relative to video dimensions) + embeddings for click-to-search
 router.post('/:id/detect-faces', authenticate, async (req, res) => {
   try {
+    const tenantId = getTenantId(req);
     const { timestamp } = req.body; // seconds into the video
     if (timestamp == null || timestamp < 0) {
       return res.status(400).json({ error: 'timestamp (seconds) is required' });
     }
 
     const { rows } = await pool.query(
-      'SELECT file_path FROM recordings WHERE id = $1',
-      [req.params.id]
+      `SELECT r.file_path FROM recordings r
+       JOIN cameras c ON r.camera_id = c.id
+       WHERE r.id = $1 AND c.tenant_id = $2`,
+      [req.params.id, tenantId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Recording not found' });
 

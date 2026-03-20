@@ -3,6 +3,7 @@ import { execSync } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import { pool } from '../db/pool.js';
 import { authenticate, authorize } from '../services/auth.js';
+import { isS3Configured } from '../services/storage.js';
 
 const router = Router();
 
@@ -242,6 +243,23 @@ router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
       FROM recordings
     `);
 
+    // S3 storage stats
+    let s3Stats = { configured: isS3Configured(), recordings_in_s3: 0, recordings_local: 0, endpoint: null, bucket: null };
+    if (s3Stats.configured) {
+      s3Stats.endpoint = process.env.S3_ENDPOINT || null;
+      s3Stats.bucket = process.env.S3_BUCKET || null;
+      try {
+        const { rows: s3Counts } = await pool.query(`
+          SELECT
+            count(*) FILTER (WHERE s3_key IS NOT NULL)::int as in_s3,
+            count(*) FILTER (WHERE s3_key IS NULL)::int as local_only
+          FROM recordings
+        `);
+        s3Stats.recordings_in_s3 = s3Counts[0].in_s3;
+        s3Stats.recordings_local = s3Counts[0].local_only;
+      } catch { /* ignore */ }
+    }
+
     // Face embeddings count
     const { rows: faceStats } = await pool.query('SELECT count(*)::int as total FROM face_embeddings');
 
@@ -303,8 +321,88 @@ router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
       faces: { total_embeddings: faceStats[0].total },
       cameras: camStats.reduce((acc, r) => { acc[r.status] = r.count; return acc; }, {}),
       services,
+      s3: s3Stats,
       disk_breakdown: diskBreakdown,
       docker_disk: dockerDisk,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/monitor/s3 — S3 storage health check (tests actual connectivity)
+router.get('/s3', authenticate, authorize('admin'), async (_req, res) => {
+  try {
+    const configured = isS3Configured();
+
+    if (!configured) {
+      return res.json({
+        configured: false,
+        status: 'not_configured',
+        message: 'S3 não configurado — gravações ficam no disco local',
+      });
+    }
+
+    // Test connectivity by listing bucket (max 1 object)
+    const { S3Client, ListObjectsV2Command, HeadBucketCommand } = await import('@aws-sdk/client-s3');
+    const client = new S3Client({
+      endpoint: process.env.S3_ENDPOINT,
+      region: process.env.S3_REGION || 'us-east-1',
+      credentials: {
+        accessKeyId: process.env.S3_ACCESS_KEY,
+        secretAccessKey: process.env.S3_SECRET_KEY,
+      },
+      forcePathStyle: true,
+    });
+
+    const start = Date.now();
+    let bucketOk = false;
+    let objectCount = 0;
+    let errorMsg = null;
+
+    try {
+      await client.send(new HeadBucketCommand({ Bucket: process.env.S3_BUCKET }));
+      bucketOk = true;
+    } catch (err) {
+      errorMsg = `Bucket check failed: ${err.message}`;
+    }
+
+    if (bucketOk) {
+      try {
+        const list = await client.send(new ListObjectsV2Command({
+          Bucket: process.env.S3_BUCKET,
+          MaxKeys: 1,
+        }));
+        objectCount = list.KeyCount || 0;
+      } catch { /* ignore */ }
+    }
+
+    const latencyMs = Date.now() - start;
+
+    // DB stats
+    const { rows } = await pool.query(`
+      SELECT
+        count(*) FILTER (WHERE s3_key IS NOT NULL)::int as in_s3,
+        count(*) FILTER (WHERE s3_key IS NULL)::int as local_only,
+        COALESCE(SUM(file_size) FILTER (WHERE s3_key IS NOT NULL), 0)::text as s3_size,
+        COALESCE(SUM(file_size) FILTER (WHERE s3_key IS NULL), 0)::text as local_size
+      FROM recordings
+    `);
+
+    res.json({
+      configured: true,
+      status: bucketOk ? 'healthy' : 'error',
+      endpoint: process.env.S3_ENDPOINT,
+      bucket: process.env.S3_BUCKET,
+      region: process.env.S3_REGION || 'us-east-1',
+      latency_ms: latencyMs,
+      error: errorMsg,
+      recordings: {
+        in_s3: rows[0].in_s3,
+        local_only: rows[0].local_only,
+        s3_size: parseInt(rows[0].s3_size, 10),
+        local_size: parseInt(rows[0].local_size, 10),
+      },
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
