@@ -94,6 +94,17 @@ function getDiskUsage() {
   } catch { return []; }
 }
 
+// Helper: parse Docker size strings like "33.05GB", "249.9kB", "10.37GB" to bytes
+function parseDockerSize(sizeStr) {
+  if (!sizeStr) return 0;
+  const match = sizeStr.match(/^([\d.]+)\s*(B|kB|KB|MB|GB|TB)$/i);
+  if (!match) return 0;
+  const num = parseFloat(match[1]);
+  const unit = match[2].toUpperCase();
+  const multipliers = { 'B': 1, 'KB': 1000, 'MB': 1e6, 'GB': 1e9, 'TB': 1e12 };
+  return Math.round(num * (multipliers[unit] || 1));
+}
+
 // Helper: detailed disk breakdown using du for key directories
 function getDiskBreakdown() {
   const breakdown = [];
@@ -105,7 +116,7 @@ function getDiskBreakdown() {
     const dockerDf = execSync("docker system df --format '{{.Type}}\\t{{.Size}}\\t{{.Reclaimable}}' 2>/dev/null", { encoding: 'utf8', timeout: 15000 });
     for (const line of dockerDf.trim().split('\n').filter(Boolean)) {
       const [type, size, reclaimable] = line.split('\t');
-      breakdown.push({ name: `Docker ${type}`, size, reclaimable: reclaimable || '0B', category: 'docker' });
+      breakdown.push({ name: `Docker ${type}`, size, bytes: parseDockerSize(size), reclaimable: reclaimable || '0B', category: 'docker' });
     }
   } catch {
     // Docker socket not available

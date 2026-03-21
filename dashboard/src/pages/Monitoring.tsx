@@ -281,7 +281,7 @@ function Monitoring() {
               detail={`${formatBytes(d.used)} / ${formatBytes(d.total)}`} />
           ))}
           <div style={{ fontSize: "0.65rem", color: "#999", marginTop: "0.3rem", marginBottom: "0.5rem" }}>
-            Gravações no disco: {formatBytes(stats.recordings.local_size || stats.recordings.total_size)} ({stats.recordings.local_count ?? stats.recordings.total} arquivos)
+            Gravações no disco: {formatBytes(stats.recordings.local_size || stats.recordings.total_size)} ({(stats.recordings.local_size ? stats.recordings.local_count : stats.recordings.total) ?? 0} arquivos)
             {" | "}DB: {formatBytes(stats.database.size)}
           </div>
 
