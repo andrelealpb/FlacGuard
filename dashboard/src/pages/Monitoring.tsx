@@ -17,7 +17,7 @@ interface SystemStats {
   network: { name: string; rx_bytes: number; tx_bytes: number; rx_packets: number; tx_packets: number }[];
   uptime: number;
   database: { size: number; active_connections: number };
-  recordings: { total: number; total_size: number; cameras_with_recordings: number };
+  recordings: { total: number; total_size: number; local_size: number; local_count: number; cameras_with_recordings: number };
   faces: { total_embeddings: number };
   cameras: Record<string, number>;
   services: { name: string; status: string; ports: string }[];
@@ -216,7 +216,7 @@ function Monitoring() {
           <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "#e65100" }}>
             {formatBytes(stats.recordings.total_size)}
           </div>
-          <div style={{ fontSize: "0.7rem", color: "#999" }}>Gravações</div>
+          <div style={{ fontSize: "0.7rem", color: "#999" }}>Gravações (total)</div>
         </div>
         <div style={{ ...card, textAlign: "center" }}>
           <div style={{ fontSize: "1.4rem", fontWeight: 700, color: onlineCams === totalCams ? "#2e7d32" : "#ff9800" }}>
@@ -281,7 +281,7 @@ function Monitoring() {
               detail={`${formatBytes(d.used)} / ${formatBytes(d.total)}`} />
           ))}
           <div style={{ fontSize: "0.65rem", color: "#999", marginTop: "0.3rem", marginBottom: "0.5rem" }}>
-            Gravações: {formatBytes(stats.recordings.total_size)} ({stats.recordings.total} arquivos)
+            Gravações no disco: {formatBytes(stats.recordings.local_size || stats.recordings.total_size)} ({stats.recordings.local_count ?? stats.recordings.total} arquivos)
             {" | "}DB: {formatBytes(stats.database.size)}
           </div>
 

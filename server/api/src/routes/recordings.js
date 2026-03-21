@@ -218,15 +218,24 @@ router.post('/:id/detect-faces', authenticate, async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `SELECT r.file_path FROM recordings r
+      `SELECT r.file_path, r.s3_key FROM recordings r
        JOIN cameras c ON r.camera_id = c.id
        WHERE r.id = $1 AND c.tenant_id = $2`,
       [req.params.id, tenantId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Recording not found' });
 
-    const filePath = rows[0].file_path;
-    if (!filePath || !existsSync(filePath)) {
+    // Determine video source: S3 presigned URL or local file
+    let videoSource = null;
+    if (rows[0].s3_key) {
+      const url = await getPresignedUrl(rows[0].s3_key, 300);
+      if (url) videoSource = url;
+    }
+    if (!videoSource) {
+      const filePath = rows[0].file_path;
+      if (filePath && existsSync(filePath)) videoSource = filePath;
+    }
+    if (!videoSource) {
       return res.status(404).json({ error: 'Recording file not found on disk' });
     }
 
@@ -234,7 +243,7 @@ router.post('/:id/detect-faces', authenticate, async (req, res) => {
     const { spawn } = await import('child_process');
     const ffmpeg = spawn('ffmpeg', [
       '-ss', String(timestamp),
-      '-i', filePath,
+      '-i', videoSource,
       '-frames:v', '1',
       '-f', 'image2',
       '-c:v', 'mjpeg',
@@ -263,7 +272,7 @@ router.post('/:id/detect-faces', authenticate, async (req, res) => {
           '-select_streams', 'v:0',
           '-show_entries', 'stream=width,height',
           '-of', 'json',
-          filePath,
+          videoSource,
         ]);
         let probeOut = '';
         probe.stdout.on('data', (d) => { probeOut += d; });

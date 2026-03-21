@@ -286,6 +286,8 @@ router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
       SELECT
         count(*)::int as total_recordings,
         COALESCE(SUM(file_size), 0)::text as total_size,
+        COALESCE(SUM(file_size) FILTER (WHERE s3_key IS NULL), 0)::text as local_size,
+        count(*) FILTER (WHERE s3_key IS NULL)::int as local_count,
         count(DISTINCT camera_id)::int as cameras_with_recordings
       FROM recordings
     `);
@@ -393,6 +395,8 @@ router.get('/stats', authenticate, authorize('admin'), async (_req, res) => {
       recordings: {
         total: recStats[0].total_recordings,
         total_size: parseInt(recStats[0].total_size, 10),
+        local_size: parseInt(recStats[0].local_size, 10),
+        local_count: recStats[0].local_count,
         cameras_with_recordings: recStats[0].cameras_with_recordings,
       },
       faces: { total_embeddings: faceStats[0].total },
