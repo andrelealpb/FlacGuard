@@ -17,6 +17,7 @@ import settingsRouter from './routes/settings.js';
 import facesRouter from './routes/faces.js';
 import monitorRouter from './routes/monitor.js';
 import alertsRouter from './routes/alerts.js';
+import internalRouter from './routes/internal.js';
 import { pool } from './db/pool.js';
 import { startMotionDetector } from './services/motion-detector.js';
 import { manageContinuousRecordings } from './services/recorder.js';
@@ -52,6 +53,9 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/faces', facesRouter);
 app.use('/api/monitor', monitorRouter);
 app.use('/api/alerts', alertsRouter);
+
+// Internal API for flac-guard-control (node management)
+app.use('/api/internal', internalRouter);
 
 // Nginx-RTMP callback hooks (internal, no /api prefix)
 app.use('/hooks', hooksRouter);
