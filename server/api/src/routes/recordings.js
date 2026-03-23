@@ -361,7 +361,8 @@ router.post('/search-by-embedding', authenticate, async (req, res) => {
       }
     }
 
-    grouped.sort((a, b) => b.similarity - a.similarity);
+    // Sort by most recent first
+    grouped.sort((a, b) => new Date(b.first_seen).getTime() - new Date(a.first_seen).getTime());
 
     res.json({ total: grouped.length, total_raw: appearances.length, appearances: grouped });
   } catch (err) {

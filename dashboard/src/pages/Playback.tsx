@@ -978,7 +978,10 @@ function Playback() {
               const isNearExisting = (a: FaceAppearance) =>
                 prev.some((e) => e.camera_id === a.camera_id && Math.abs(getTs(e) - getTs(a)) < TIME_GAP_MS);
               const newItems = appearances.filter((a) => !isNearExisting(a));
-              return newItems.length > 0 ? [...prev, ...newItems] : prev;
+              if (newItems.length === 0) return prev;
+              const merged = [...prev, ...newItems];
+              merged.sort((a, b) => new Date(b.first_seen || b.detected_at).getTime() - new Date(a.first_seen || a.detected_at).getTime());
+              return merged;
             });
           }
         }

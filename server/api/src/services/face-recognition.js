@@ -261,7 +261,7 @@ export async function searchFace(embedding, options = {}) {
     paramIdx++;
   }
 
-  query += ` ORDER BY similarity DESC LIMIT $${paramIdx}`;
+  query += ` ORDER BY fe.detected_at DESC LIMIT $${paramIdx}`;
   params.push(limit);
 
   const { rows } = await pool.query(query, params);

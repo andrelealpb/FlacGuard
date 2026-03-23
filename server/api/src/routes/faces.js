@@ -103,8 +103,8 @@ router.post('/search', authenticate, authorize('admin'), async (req, res) => {
       }
     }
 
-    // Sort grouped results by best similarity descending
-    grouped.sort((a, b) => b.similarity - a.similarity);
+    // Sort grouped results by most recent first
+    grouped.sort((a, b) => new Date(b.first_seen).getTime() - new Date(a.first_seen).getTime());
 
     res.json({
       query_confidence: confidence,
