@@ -206,13 +206,14 @@ function Timeline({
 // ─── Video Player with Face Detection Overlay ───
 
 function VideoPlayer({
-  recording, recordings, onSelectRecording, token, apiFetch, onFaceClick, onFaceDetected, cameraName, pdvName,
+  recording, recordings, onSelectRecording, token, apiFetch, onFaceClick, onFaceDetected, onFaceDetectToggle, cameraName, pdvName,
   cameras, selectedCameraId, onSwitchToCamera,
 }: {
   recording: Recording; recordings: Recording[]; onSelectRecording: (r: Recording) => void; token: string;
   apiFetch: (url: string, init?: RequestInit) => Promise<Response>;
   onFaceClick: (embedding: number[]) => void;
   onFaceDetected: (faces: DetectedFace[]) => void;
+  onFaceDetectToggle?: (on: boolean) => void;
   cameraName: string; pdvName: string;
   cameras: Camera[]; selectedCameraId: string;
   onSwitchToCamera: (cameraId: string, timestamp: string) => void;
@@ -233,6 +234,7 @@ function VideoPlayer({
   const [faceError, setFaceError] = useState("");
   const lastDetectTime = useRef(-999);
   const detectingRef = useRef(false);
+  const runDetectionRef = useRef<(t: number) => void>(() => {});
 
   const [faceServiceOk, setFaceServiceOk] = useState<boolean | null>(null);
 
@@ -331,22 +333,6 @@ function VideoPlayer({
   }, [recording.id]);
   useEffect(() => { if (videoRef.current) videoRef.current.playbackRate = speed; }, [speed]);
 
-  // Detect faces when video is paused or every ~3 seconds
-  useEffect(() => {
-    if (!faceDetectOn) { setDetectedFaces([]); setFaceError(""); return; }
-
-    const interval = setInterval(() => {
-      const v = videoRef.current;
-      if (!v || v.paused || detectingRef.current) return;
-      const t = v.currentTime;
-      if (Math.abs(t - lastDetectTime.current) < 2.5) return; // debounce
-      lastDetectTime.current = t;
-      runDetection(t);
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [faceDetectOn, recording.id]);
-
   const runDetection = async (timestamp: number) => {
     setDetecting(true);
     detectingRef.current = true;
@@ -374,6 +360,25 @@ function VideoPlayer({
     setDetecting(false);
     detectingRef.current = false;
   };
+
+  // Keep ref updated so the interval always calls the latest runDetection (avoids stale closures)
+  runDetectionRef.current = runDetection;
+
+  // Detect faces every ~3 seconds while playing
+  useEffect(() => {
+    if (!faceDetectOn) { setDetectedFaces([]); setFaceError(""); return; }
+
+    const interval = setInterval(() => {
+      const v = videoRef.current;
+      if (!v || v.paused || detectingRef.current) return;
+      const t = v.currentTime;
+      if (Math.abs(t - lastDetectTime.current) < 2.5) return;
+      lastDetectTime.current = t;
+      runDetectionRef.current(t);
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [faceDetectOn, recording.id]);
 
   // Manual detection on pause
   const handlePause = () => {
@@ -648,6 +653,7 @@ function VideoPlayer({
               if (faceServiceOk === false) return;
               const next = !faceDetectOn;
               setFaceDetectOn(next);
+              onFaceDetectToggle?.(next);
               if (next && videoRef.current) runDetection(videoRef.current.currentTime);
             }}
             style={{
@@ -734,15 +740,9 @@ function VideoPlayer({
           <span style={{ opacity: 0.8 }}>{formatTime(mv.recording.started_at)} — {formatTime(mv.recording.ended_at || mv.recording.started_at)}</span>
         </div>
         <video
-          src={`/api/recordings/${mv.recording.id}/stream?token=${encodeURIComponent(token)}`}
+          src={`/api/recordings/${mv.recording.id}/stream?token=${encodeURIComponent(token)}${mv.seekOffset > 0 ? `&start=${mv.seekOffset}` : ''}`}
           style={{ width: "100%", display: "block", pointerEvents: "none" }}
           autoPlay muted playsInline
-          onLoadedMetadata={(e) => {
-            const vid = e.currentTarget;
-            if (mv.seekOffset > 0 && mv.seekOffset < vid.duration) {
-              vid.currentTime = mv.seekOffset;
-            }
-          }}
         />
       </div>
     ))}
@@ -838,6 +838,8 @@ function Playback() {
   // Auto cross-reference state (accumulated during playback)
   const [autoCrossRef, setAutoCrossRef] = useState<FaceAppearance[]>([]);
   const [autoCrossRefOn, setAutoCrossRefOn] = useState(false);
+  const autoCrossRefOnRef = useRef(false);
+  autoCrossRefOnRef.current = autoCrossRefOn;
   const autoCrossRefSearching = useRef(false);
   const searchedEmbeddings = useRef<Set<string>>(new Set());
 
@@ -866,7 +868,7 @@ function Playback() {
 
   // Auto cross-reference: when faces are detected, search for each unique face
   const handleFaceDetected = useCallback(async (faces: DetectedFace[]) => {
-    if (!autoCrossRefOn || autoCrossRefSearching.current) return;
+    if (!autoCrossRefOnRef.current || autoCrossRefSearching.current) return;
     // Only search faces with reasonable confidence (skip very partial detections)
     const goodFaces = faces.filter((f) => f.confidence >= 0.4 && f.embedding && f.embedding.length >= 10);
     for (const face of goodFaces) {
@@ -899,7 +901,7 @@ function Playback() {
       } catch { /* ignore */ }
       autoCrossRefSearching.current = false;
     }
-  }, [autoCrossRefOn, apiFetch]);
+  }, [apiFetch]);
 
   useEffect(() => {
     apiFetch("/api/cameras").then((r) => r.json()).then((cams: Camera[]) => {
@@ -1038,6 +1040,7 @@ function Playback() {
             {selectedRecording && token ? (
               <VideoPlayer recording={selectedRecording} recordings={recordings} onSelectRecording={setSelectedRecording}
                 token={token} apiFetch={apiFetch} onFaceClick={handleFaceClick} onFaceDetected={handleFaceDetected}
+                onFaceDetectToggle={(on) => { if (on) setAutoCrossRefOn(true); }}
                 cameraName={selectedCamera?.name || ""} pdvName={selectedCamera?.pdv_name || ""}
                 cameras={cameras} selectedCameraId={selectedCameraId} onSwitchToCamera={switchToCamera} />
             ) : (

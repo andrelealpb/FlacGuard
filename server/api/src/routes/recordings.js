@@ -95,6 +95,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // GET /api/recordings/:id/stream — Stream/serve the recording MP4 file
+// Optional query param: start=<seconds> to seek into the video (uses ffmpeg remux)
 router.get('/:id/stream', authenticate, async (req, res) => {
   try {
     const tenantId = getTenantId(req);
@@ -116,6 +117,28 @@ router.get('/:id/stream', authenticate, async (req, res) => {
     const filePath = rows[0].file_path;
     if (!filePath || !existsSync(filePath)) {
       return res.status(404).json({ error: 'Recording file not found on disk' });
+    }
+
+    const startSec = parseFloat(req.query.start);
+
+    // If start offset requested, use ffmpeg to remux from that point (fast-start MP4)
+    if (startSec > 0) {
+      const { spawn } = await import('child_process');
+      const ffmpeg = spawn('ffmpeg', [
+        '-ss', String(startSec),
+        '-i', filePath,
+        '-c', 'copy',
+        '-movflags', 'frag_keyframe+empty_moov+faststart',
+        '-f', 'mp4',
+        '-'
+      ]);
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Cache-Control', 'no-store');
+      ffmpeg.stdout.pipe(res);
+      ffmpeg.stderr.on('data', () => {}); // suppress stderr
+      ffmpeg.on('error', () => { if (!res.headersSent) res.status(500).end(); });
+      req.on('close', () => ffmpeg.kill('SIGTERM'));
+      return;
     }
 
     const stat = statSync(filePath);
