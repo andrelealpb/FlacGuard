@@ -494,8 +494,34 @@ function VideoPlayer({
 
   const cb: React.CSSProperties = { background: "none", border: "none", color: "#fff", cursor: "pointer", padding: "0.25rem 0.35rem", fontSize: "0.95rem", lineHeight: 1, opacity: 0.85 };
 
+  // Determine grid layout: 1 cam = full, 2 cams = 1x2, 3-4 cams = 2x2
+  const multiCamActive = showMultiCam && multiCamVideos.length > 0 && !isFullscreen;
+  const totalCams = multiCamActive ? 1 + multiCamVideos.length : 1;
+  const useGrid = totalCams >= 2;
+  const gridCols = totalCams <= 2 ? "1fr 1fr" : "1fr 1fr";
+
   return (
     <>
+    {useGrid && (
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.2rem" }}>
+        <div style={{ fontSize: "0.7rem", fontWeight: 600, color: "#1565c0", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#1565c0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="3" width="8" height="7" rx="1"/><rect x="14" y="3" width="8" height="7" rx="1"/>
+            <rect x="2" y="14" width="8" height="7" rx="1"/><rect x="14" y="14" width="8" height="7" rx="1"/>
+          </svg>
+          Playback Simultâneo — {currentCamera?.pdv_name} ({totalCams} câmeras)
+        </div>
+        <div style={{ display: "flex", gap: "0.3rem" }}>
+          <button onClick={loadMultiCamVideos}
+            style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.1rem 0.4rem",
+              cursor: "pointer", fontSize: "0.6rem", color: "#666" }}>Atualizar</button>
+          <button onClick={() => setShowMultiCam(false)}
+            style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.1rem 0.4rem",
+              cursor: "pointer", fontSize: "0.6rem", color: "#666" }}>Fechar</button>
+        </div>
+      </div>
+    )}
+    <div style={useGrid ? { display: "grid", gridTemplateColumns: gridCols, gap: "0.3rem" } : {}}>
     <div ref={containerRef} style={{
       background: "#000", borderRadius: isFullscreen ? 0 : "6px", overflow: "hidden", border: isFullscreen ? "none" : "1px solid #333",
       ...(isFullscreen ? { display: "flex", flexDirection: "column" as const, height: "100vh" } : {}),
@@ -668,54 +694,43 @@ function VideoPlayer({
       </div>
     </div>
 
-    {/* Multi-camera simultaneous playback panel */}
-    {showMultiCam && (
-      <div style={{ background: "#fff", borderRadius: "6px", border: "1px solid #2196f3", padding: "0.5rem", marginTop: "0.5rem" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.4rem" }}>
-          <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#1565c0", display: "flex", alignItems: "center", gap: "0.3rem" }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1565c0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="3" width="8" height="7" rx="1"/><rect x="14" y="3" width="8" height="7" rx="1"/>
-              <rect x="2" y="14" width="8" height="7" rx="1"/><rect x="14" y="14" width="8" height="7" rx="1"/>
-            </svg>
-            Playback Simultâneo — {currentCamera?.pdv_name}
-          </div>
-          <div style={{ display: "flex", gap: "0.3rem" }}>
-            <button onClick={loadMultiCamVideos}
-              style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.1rem 0.4rem",
-                cursor: "pointer", fontSize: "0.65rem", color: "#666" }}>
-              Atualizar
-            </button>
-            <button onClick={() => setShowMultiCam(false)}
-              style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.1rem 0.4rem",
-                cursor: "pointer", fontSize: "0.65rem", color: "#666" }}>
-              Fechar
-            </button>
-          </div>
+    {/* Multi-camera simultaneous playback - sibling videos in grid */}
+    {multiCamActive && multiCamVideos.map((mv) => (
+      <div key={mv.camera.id} style={{ background: "#000", borderRadius: "6px", overflow: "hidden", border: "1px solid #333" }}>
+        <div style={{ padding: "0.15rem 0.4rem", background: "#1565c0", color: "#fff",
+          fontSize: "0.6rem", fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+          <span>{mv.camera.name}</span>
+          <span style={{ opacity: 0.8 }}>{formatTime(mv.recording.started_at)} — {formatTime(mv.recording.ended_at || mv.recording.started_at)}</span>
         </div>
-        {multiCamLoading ? (
-          <div style={{ textAlign: "center", padding: "1rem", color: "#999", fontSize: "0.75rem" }}>Buscando vídeos simultâneos...</div>
-        ) : multiCamVideos.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "1rem", color: "#999", fontSize: "0.75rem" }}>
-            Nenhum vídeo simultâneo encontrado nas outras câmeras deste PDV.
-          </div>
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: multiCamVideos.length === 1 ? "1fr" : "1fr 1fr", gap: "0.4rem" }}>
-            {multiCamVideos.map((mv) => (
-              <div key={mv.camera.id} style={{ background: "#000", borderRadius: "4px", overflow: "hidden" }}>
-                <div style={{ padding: "0.15rem 0.4rem", background: "rgba(33,150,243,0.9)", color: "#fff",
-                  fontSize: "0.6rem", fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
-                  <span>{mv.camera.name}</span>
-                  <span>{formatTime(mv.recording.started_at)} — {formatTime(mv.recording.ended_at || mv.recording.started_at)}</span>
-                </div>
-                <video
-                  src={`/api/recordings/${mv.recording.id}/stream?token=${encodeURIComponent(token)}`}
-                  style={{ width: "100%", display: "block", maxHeight: "30vh" }}
-                  controls muted playsInline
-                />
-              </div>
-            ))}
-          </div>
-        )}
+        <video
+          src={`/api/recordings/${mv.recording.id}/stream?token=${encodeURIComponent(token)}`}
+          style={{ width: "100%", display: "block" }}
+          autoPlay muted playsInline
+        />
+      </div>
+    ))}
+    {showMultiCam && !multiCamActive && !multiCamLoading && (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontSize: "0.75rem", padding: "1rem",
+        background: "#000", borderRadius: "6px", border: "1px solid #333" }}>
+        Nenhum vídeo simultâneo encontrado.
+      </div>
+    )}
+    {showMultiCam && multiCamLoading && (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontSize: "0.75rem", padding: "1rem",
+        background: "#000", borderRadius: "6px", border: "1px solid #333" }}>
+        Buscando vídeos...
+      </div>
+    )}
+    </div>
+    {/* Non-grid multi-cam controls when active but no videos */}
+    {showMultiCam && !multiCamActive && !isFullscreen && (
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.3rem", marginTop: "0.2rem" }}>
+        <button onClick={loadMultiCamVideos}
+          style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.1rem 0.4rem",
+            cursor: "pointer", fontSize: "0.6rem", color: "#666" }}>Atualizar</button>
+        <button onClick={() => setShowMultiCam(false)}
+          style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.1rem 0.4rem",
+            cursor: "pointer", fontSize: "0.6rem", color: "#666" }}>Fechar</button>
       </div>
     )}
     </>
@@ -815,9 +830,9 @@ function Playback() {
   // Auto cross-reference: when faces are detected, search for each unique face
   const handleFaceDetected = useCallback(async (faces: DetectedFace[]) => {
     if (!autoCrossRefOn || autoCrossRefSearching.current) return;
-    // Use first few floats of embedding as a fingerprint to avoid re-searching same face
-    for (const face of faces) {
-      if (!face.embedding || face.embedding.length < 10) continue;
+    // Only search high-confidence faces (skip heads, necks, partial detections)
+    const goodFaces = faces.filter((f) => f.confidence >= 0.5 && f.embedding && f.embedding.length >= 10);
+    for (const face of goodFaces) {
       const fingerprint = face.embedding.slice(0, 8).map((v) => v.toFixed(2)).join(",");
       if (searchedEmbeddings.current.has(fingerprint)) continue;
       searchedEmbeddings.current.add(fingerprint);
@@ -827,17 +842,25 @@ function Playback() {
         const res = await apiFetch("/api/recordings/search-by-embedding", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ embedding: face.embedding, limit: 20, min_similarity: 0.6 }),
+          body: JSON.stringify({ embedding: face.embedding, limit: 20, min_similarity: 0.7 }),
         });
         if (res.ok) {
           const data = await res.json();
           const appearances: FaceAppearance[] = data.appearances || [];
           if (appearances.length > 0) {
             setAutoCrossRef((prev) => {
-              const existing = new Set(prev.map((a) => `${a.camera_id}-${a.first_seen || a.detected_at}`));
-              const newItems = appearances.filter(
-                (a) => !existing.has(`${a.camera_id}-${a.first_seen || a.detected_at}`)
-              );
+              // Deduplicate by camera + day (same camera on same day = same video/visit context)
+              const existingKeys = new Set(prev.map((a) => {
+                const day = (a.first_seen || a.detected_at).slice(0, 10);
+                return `${a.camera_id}-${day}`;
+              }));
+              const newItems = appearances.filter((a) => {
+                const day = (a.first_seen || a.detected_at).slice(0, 10);
+                const key = `${a.camera_id}-${day}`;
+                if (existingKeys.has(key)) return false;
+                existingKeys.add(key);
+                return true;
+              });
               return newItems.length > 0 ? [...prev, ...newItems] : prev;
             });
           }
