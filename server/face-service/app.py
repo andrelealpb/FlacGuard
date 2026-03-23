@@ -66,7 +66,10 @@ def _extract_face_result(face, img):
     """Convert an InsightFace detection to our API result dict."""
     bbox = face.bbox.astype(int).tolist()
     confidence = float(face.det_score)
-    embedding = face.embedding.tolist()
+    # ArcFace embeddings should be L2-normalized; ensure it for reliable cosine similarity
+    raw_emb = face.embedding
+    norm = np.linalg.norm(raw_emb)
+    embedding = (raw_emb / norm).tolist() if norm > 0 else raw_emb.tolist()
 
     # Crop face for thumbnail (with margin)
     h, w = img.shape[:2]

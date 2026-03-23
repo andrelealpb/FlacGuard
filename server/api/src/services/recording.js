@@ -5,14 +5,17 @@ import { pool } from '../db/pool.js';
  * Returns the recording and a URL/path to serve it.
  */
 export async function findRecordingByTimestamp(cameraId, timestamp, durationSec = 300) {
+  // Use a window: find any recording that overlaps [timestamp - tolerance, timestamp + tolerance]
+  // This accounts for slight start-time differences between cameras
+  const toleranceSec = Math.max(durationSec, 300);
   const { rows } = await pool.query(
     `SELECT * FROM recordings
      WHERE camera_id = $1
-       AND started_at <= $2
-       AND (ended_at IS NULL OR ended_at >= $2)
-     ORDER BY started_at DESC
+       AND started_at <= ($2::timestamptz + interval '1 second' * $3)
+       AND (ended_at IS NULL OR ended_at >= ($2::timestamptz - interval '1 second' * $3))
+     ORDER BY ABS(EXTRACT(EPOCH FROM (started_at - $2::timestamptz)))
      LIMIT 1`,
-    [cameraId, timestamp]
+    [cameraId, timestamp, toleranceSec]
   );
 
   return rows[0] || null;

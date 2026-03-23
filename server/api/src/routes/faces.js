@@ -41,7 +41,7 @@ router.post('/search', authenticate, authorize('admin'), async (req, res) => {
     // Search database
     const results = await searchFace(embedding, {
       limit: limit || 50,
-      minSimilarity: min_similarity || 0.6,
+      minSimilarity: min_similarity || 0.45,
       cameraIds: camera_ids,
       from,
       to,

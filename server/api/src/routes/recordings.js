@@ -313,7 +313,7 @@ router.post('/:id/detect-faces', authenticate, async (req, res) => {
 // POST /api/recordings/search-by-embedding — Search for a person by embedding vector
 router.post('/search-by-embedding', authenticate, async (req, res) => {
   try {
-    const { embedding, limit = 50, min_similarity = 0.6 } = req.body;
+    const { embedding, limit = 50, min_similarity = 0.45 } = req.body;
     if (!embedding || !Array.isArray(embedding)) {
       return res.status(400).json({ error: 'embedding array is required' });
     }
