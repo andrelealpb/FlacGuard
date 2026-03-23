@@ -206,7 +206,7 @@ function Timeline({
 
 function VideoPlayer({
   recording, recordings, onSelectRecording, token, apiFetch, onFaceClick, onFaceDetected, cameraName, pdvName,
-  cameras, selectedCameraId,
+  cameras, selectedCameraId, onSwitchToCamera,
 }: {
   recording: Recording; recordings: Recording[]; onSelectRecording: (r: Recording) => void; token: string;
   apiFetch: (url: string, init?: RequestInit) => Promise<Response>;
@@ -214,6 +214,7 @@ function VideoPlayer({
   onFaceDetected: (faces: DetectedFace[]) => void;
   cameraName: string; pdvName: string;
   cameras: Camera[]; selectedCameraId: string;
+  onSwitchToCamera: (cameraId: string, timestamp: string) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -278,6 +279,18 @@ function VideoPlayer({
     setMultiCamVideos(results);
     setMultiCamLoading(false);
   }, [hasMultiCam, recording?.id, siblingCameras.length]);
+
+  // Auto-load multi-cam videos when showMultiCam is active
+  useEffect(() => {
+    if (!showMultiCam || !hasMultiCam) return;
+    // Load immediately
+    loadMultiCamVideos();
+    // Then poll every 10 seconds to keep in sync with current playback position
+    const interval = setInterval(() => {
+      if (multiCamVideos.length === 0) loadMultiCamVideos();
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [showMultiCam, recording.id]);
 
   // Check face service health periodically (every 15s if not ok, stop once ok)
   useEffect(() => {
@@ -696,7 +709,11 @@ function VideoPlayer({
 
     {/* Multi-camera simultaneous playback - sibling videos in grid */}
     {multiCamActive && multiCamVideos.map((mv) => (
-      <div key={mv.camera.id} style={{ background: "#000", borderRadius: "6px", overflow: "hidden", border: "1px solid #333" }}>
+      <div key={mv.camera.id}
+        onClick={() => onSwitchToCamera(mv.camera.id, mv.recording.started_at)}
+        style={{ background: "#000", borderRadius: "6px", overflow: "hidden", border: "1px solid #333", cursor: "pointer", position: "relative" }}
+        title={`Abrir ${mv.camera.name} como vídeo principal`}
+      >
         <div style={{ padding: "0.15rem 0.4rem", background: "#1565c0", color: "#fff",
           fontSize: "0.6rem", fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
           <span>{mv.camera.name}</span>
@@ -704,7 +721,7 @@ function VideoPlayer({
         </div>
         <video
           src={`/api/recordings/${mv.recording.id}/stream?token=${encodeURIComponent(token)}`}
-          style={{ width: "100%", display: "block" }}
+          style={{ width: "100%", display: "block", pointerEvents: "none" }}
           autoPlay muted playsInline
         />
       </div>
@@ -830,8 +847,8 @@ function Playback() {
   // Auto cross-reference: when faces are detected, search for each unique face
   const handleFaceDetected = useCallback(async (faces: DetectedFace[]) => {
     if (!autoCrossRefOn || autoCrossRefSearching.current) return;
-    // Only search high-confidence faces (skip heads, necks, partial detections)
-    const goodFaces = faces.filter((f) => f.confidence >= 0.5 && f.embedding && f.embedding.length >= 10);
+    // Only search faces with reasonable confidence (skip very partial detections)
+    const goodFaces = faces.filter((f) => f.confidence >= 0.4 && f.embedding && f.embedding.length >= 10);
     for (const face of goodFaces) {
       const fingerprint = face.embedding.slice(0, 8).map((v) => v.toFixed(2)).join(",");
       if (searchedEmbeddings.current.has(fingerprint)) continue;
@@ -842,7 +859,7 @@ function Playback() {
         const res = await apiFetch("/api/recordings/search-by-embedding", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ embedding: face.embedding, limit: 20, min_similarity: 0.7 }),
+          body: JSON.stringify({ embedding: face.embedding, limit: 20, min_similarity: 0.6 }),
         });
         if (res.ok) {
           const data = await res.json();
@@ -915,6 +932,15 @@ function Playback() {
       .then((r) => r.json()).then((data) => {
         if (data && !data.error) { setSelectedDate(dateToYMD(new Date(data.started_at))); setTimeout(() => setSelectedRecording(data), 500); }
       }).catch(console.error);
+  };
+
+  const switchToCamera = (cameraId: string, timestamp: string) => {
+    // Reset tools when switching via multi-cam click
+    setAutoCrossRef([]);
+    setAutoCrossRefOn(false);
+    searchedEmbeddings.current.clear();
+    setFaceSearchResults(null);
+    jumpToMoment(cameraId, timestamp);
   };
 
   const jumpToMoment = (cameraId: string, timestamp: string) => {
@@ -999,7 +1025,7 @@ function Playback() {
               <VideoPlayer recording={selectedRecording} recordings={recordings} onSelectRecording={setSelectedRecording}
                 token={token} apiFetch={apiFetch} onFaceClick={handleFaceClick} onFaceDetected={handleFaceDetected}
                 cameraName={selectedCamera?.name || ""} pdvName={selectedCamera?.pdv_name || ""}
-                cameras={cameras} selectedCameraId={selectedCameraId} />
+                cameras={cameras} selectedCameraId={selectedCameraId} onSwitchToCamera={switchToCamera} />
             ) : (
               <div style={{ background: "#000", borderRadius: "6px", aspectRatio: "16/9", display: "flex", alignItems: "center", justifyContent: "center",
                 color: "#666", fontSize: "0.85rem", maxHeight: "75vh" }}>
