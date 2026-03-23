@@ -167,30 +167,64 @@ export async function storeFaceEmbeddings(cameraId, faces, detectedAt) {
 export async function checkWatchlist(cameraId, faceEmbeddingIds) {
   const matches = [];
 
-  // Get active watchlist entries
+  // Get active watchlist entries (with optional person_id for multi-embedding matching)
   const { rows: watchlist } = await pool.query(
-    'SELECT id, name, alert_type, embedding FROM face_watchlist WHERE is_active = true'
+    'SELECT id, name, alert_type, embedding, person_id FROM face_watchlist WHERE is_active = true'
   );
 
   if (watchlist.length === 0) return matches;
 
-  for (const embId of faceEmbeddingIds) {
-    // For each stored face embedding, compare against all watchlist entries
-    for (const entry of watchlist) {
-      const { rows } = await pool.query(
-        `SELECT 1 - (fe.embedding <=> fw.embedding) AS similarity
-         FROM face_embeddings fe, face_watchlist fw
-         WHERE fe.id = $1 AND fw.id = $2`,
-        [embId, entry.id]
+  // Pre-fetch person embeddings for watchlist entries linked to a person
+  const personEmbeddings = new Map();
+  for (const entry of watchlist) {
+    if (entry.person_id) {
+      const { rows: pEmbs } = await pool.query(
+        'SELECT embedding FROM face_embeddings WHERE person_id = $1',
+        [entry.person_id]
       );
+      if (pEmbs.length > 0) {
+        personEmbeddings.set(entry.id, pEmbs);
+      }
+    }
+  }
 
-      if (rows.length > 0 && rows[0].similarity >= SIMILARITY_THRESHOLD) {
+  for (const embId of faceEmbeddingIds) {
+    for (const entry of watchlist) {
+      let bestSimilarity = 0;
+
+      if (personEmbeddings.has(entry.id)) {
+        // Multi-embedding matching: compare against ALL embeddings of the person
+        // Use the best (highest) similarity score
+        const pEmbs = personEmbeddings.get(entry.id);
+        for (const pEmb of pEmbs) {
+          const embStr = typeof pEmb.embedding === 'string' ? pEmb.embedding : `[${pEmb.embedding.join(',')}]`;
+          const { rows } = await pool.query(
+            `SELECT 1 - (fe.embedding <=> $2::vector) AS similarity
+             FROM face_embeddings fe WHERE fe.id = $1`,
+            [embId, embStr]
+          );
+          if (rows.length > 0 && rows[0].similarity > bestSimilarity) {
+            bestSimilarity = rows[0].similarity;
+          }
+        }
+      } else {
+        // Single embedding matching (legacy or no person linked)
+        const { rows } = await pool.query(
+          `SELECT 1 - (fe.embedding <=> fw.embedding) AS similarity
+           FROM face_embeddings fe, face_watchlist fw
+           WHERE fe.id = $1 AND fw.id = $2`,
+          [embId, entry.id]
+        );
+        if (rows.length > 0) bestSimilarity = rows[0].similarity;
+      }
+
+      if (bestSimilarity >= SIMILARITY_THRESHOLD) {
         // Create alert
         const { rows: alertRows } = await pool.query(
           `INSERT INTO face_alerts (watchlist_id, face_embedding_id, camera_id, similarity)
            VALUES ($1, $2, $3, $4)
            RETURNING id`,
-          [entry.id, embId, cameraId, rows[0].similarity]
+          [entry.id, embId, cameraId, bestSimilarity]
         );
 
         // Create event
@@ -201,7 +235,7 @@ export async function checkWatchlist(cameraId, faceEmbeddingIds) {
             alert_type: 'watchlist_match',
             watchlist_id: entry.id,
             watchlist_name: entry.name,
-            similarity: parseFloat(rows[0].similarity.toFixed(3)),
+            similarity: parseFloat(bestSimilarity.toFixed(3)),
             face_alert_id: alertRows[0].id,
           })]
         );
@@ -209,11 +243,11 @@ export async function checkWatchlist(cameraId, faceEmbeddingIds) {
         matches.push({
           watchlist_id: entry.id,
           face_embedding_id: embId,
-          similarity: rows[0].similarity,
+          similarity: bestSimilarity,
           watchlist_entry: { id: entry.id, name: entry.name, alert_type: entry.alert_type },
         });
 
-        console.log(`[Face] WATCHLIST MATCH: "${entry.name}" (${entry.alert_type}) on camera ${cameraId} — ${(rows[0].similarity * 100).toFixed(1)}%`);
+        console.log(`[Face] WATCHLIST MATCH: "${entry.name}" (${entry.alert_type}) on camera ${cameraId} — ${(bestSimilarity * 100).toFixed(1)}%`);
       }
     }
   }

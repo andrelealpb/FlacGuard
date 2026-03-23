@@ -1144,13 +1144,42 @@ function Playback() {
                   <div style={{ fontSize: "0.85rem", fontWeight: 600 }}>
                     {faceSearching ? "Buscando aparições..." : `${faceSearchResults?.length || 0} momento(s) distinto(s)`}
                   </div>
-                  <button
-                    onClick={() => { setFaceSearchResults(null); setFaceSearching(false); }}
-                    style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.15rem 0.5rem",
-                      cursor: "pointer", fontSize: "0.75rem", color: "#666" }}
-                  >
-                    Fechar
-                  </button>
+                  <div style={{ display: "flex", gap: "0.3rem" }}>
+                    {faceSearchResults && faceSearchResults.length > 0 && (
+                      <button
+                        onClick={async () => {
+                          const personName = prompt("Nome para esta pessoa:");
+                          if (!personName) return;
+                          try {
+                            const ids = faceSearchResults.map((a) => a.id);
+                            const r = await apiFetch("/api/faces/persons", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ name: personName, face_embedding_ids: ids }),
+                            });
+                            if (r.ok) {
+                              const data = await r.json();
+                              alert(`Pessoa "${personName}" criada com ${data.embedding_count} embeddings!`);
+                            } else {
+                              const e = await r.json();
+                              alert(e.error || "Erro ao criar pessoa");
+                            }
+                          } catch { alert("Erro ao criar pessoa"); }
+                        }}
+                        style={{ background: "#1565c0", color: "#fff", border: "none", borderRadius: "4px", padding: "0.15rem 0.5rem",
+                          cursor: "pointer", fontSize: "0.7rem", fontWeight: 600 }}
+                      >
+                        Criar Pessoa
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { setFaceSearchResults(null); setFaceSearching(false); }}
+                      style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.15rem 0.5rem",
+                        cursor: "pointer", fontSize: "0.75rem", color: "#666" }}
+                    >
+                      Fechar
+                    </button>
+                  </div>
                 </div>
 
                 {faceSearchResults && faceSearchResults.length > 0 && (

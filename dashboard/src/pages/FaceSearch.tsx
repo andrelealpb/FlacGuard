@@ -34,6 +34,18 @@ interface WatchlistEntry {
   created_at: string;
 }
 
+interface Person {
+  id: string;
+  name: string;
+  description: string | null;
+  photo_url: string | null;
+  embedding_count: number;
+  watchlist_id: string | null;
+  alert_type: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 interface FaceStatus {
   service_available: boolean;
   total_embeddings: number;
@@ -62,7 +74,7 @@ function FaceSearch() {
   const [error, setError] = useState("");
 
   // Watchlist state
-  const [tab, setTab] = useState<"search" | "watchlist" | "alerts">("search");
+  const [tab, setTab] = useState<"search" | "watchlist" | "persons">("search");
   const [watchlist, setWatchlist] = useState<WatchlistEntry[]>([]);
   const [wlLoading, setWlLoading] = useState(false);
   const [wlName, setWlName] = useState("");
@@ -71,6 +83,11 @@ function FaceSearch() {
   const [wlPhoto, setWlPhoto] = useState<string>("");
   const [wlPreview, setWlPreview] = useState<string | null>(null);
   const [wlAdding, setWlAdding] = useState(false);
+
+  // Persons state
+  const [persons, setPersons] = useState<Person[]>([]);
+  const [personsLoading, setPersonsLoading] = useState(false);
+  const [personSearchResult, setPersonSearchResult] = useState<{ personId: string; result: SearchResult } | null>(null);
 
   // Status
   const [status, setStatus] = useState<FaceStatus | null>(null);
@@ -160,10 +177,58 @@ function FaceSearch() {
     loadWatchlist();
   };
 
+  const loadPersons = async () => {
+    setPersonsLoading(true);
+    try {
+      const res = await apiFetch("/api/faces/persons");
+      setPersons(await res.json());
+    } catch { /* ignore */ }
+    setPersonsLoading(false);
+  };
+
+  const deletePerson = async (id: string) => {
+    if (!confirm("Remover esta pessoa? Os embeddings serão desvinculados mas não apagados.")) return;
+    await apiFetch(`/api/faces/persons/${id}`, { method: "DELETE" });
+    loadPersons();
+  };
+
+  const addPersonToWatchlist = async (personId: string, alertType: string) => {
+    try {
+      const res = await apiFetch(`/api/faces/persons/${personId}/watchlist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alert_type: alertType }),
+      });
+      if (res.ok) {
+        loadPersons();
+        alert("Pessoa adicionada à watchlist!");
+      } else {
+        const e = await res.json();
+        alert(e.error || "Erro");
+      }
+    } catch { alert("Erro ao adicionar à watchlist"); }
+  };
+
+  const searchByPerson = async (personId: string) => {
+    setPersonSearchResult(null);
+    try {
+      const res = await apiFetch(`/api/faces/persons/${personId}/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 100 }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPersonSearchResult({ personId, result: data });
+      }
+    } catch { /* ignore */ }
+  };
+
   // Load data on tab change
   const switchTab = (t: typeof tab) => {
     setTab(t);
     if (t === "watchlist") loadWatchlist();
+    if (t === "persons") loadPersons();
     loadStatus();
   };
 
@@ -200,6 +265,7 @@ function FaceSearch() {
       {/* Tabs */}
       <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
         <button onClick={() => switchTab("search")} style={tabBtn(tab === "search")}>Buscar Suspeito</button>
+        <button onClick={() => switchTab("persons")} style={tabBtn(tab === "persons")}>Pessoas</button>
         <button onClick={() => switchTab("watchlist")} style={tabBtn(tab === "watchlist")}>Watchlist</button>
       </div>
 
@@ -299,6 +365,136 @@ function FaceSearch() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Persons Tab */}
+      {tab === "persons" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
+            <div style={{ fontSize: "0.85rem", color: "#555" }}>
+              {persons.length} pessoa(s) cadastrada(s)
+            </div>
+            <button onClick={loadPersons} style={{ ...btn, background: "#eee", color: "#333", padding: "0.25rem 0.75rem" }}>
+              Atualizar
+            </button>
+          </div>
+
+          {personsLoading ? (
+            <div style={{ textAlign: "center", padding: "2rem", color: "#999" }}>Carregando...</div>
+          ) : persons.length === 0 ? (
+            <div style={{ ...card, textAlign: "center", color: "#999", padding: "2rem" }}>
+              Nenhuma pessoa cadastrada. Crie uma pessoa a partir da busca facial no Playback (clique no rosto &rarr; Criar Pessoa).
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              {persons.map((p) => {
+                const at = p.alert_type ? alertTypeLabels[p.alert_type] || alertTypeLabels.suspect : null;
+                const searchOpen = personSearchResult?.personId === p.id;
+                return (
+                  <div key={p.id} style={card}>
+                    <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+                      {p.photo_url && token && (
+                        <img
+                          src={`${p.photo_url}&token=${encodeURIComponent(token)}`}
+                          alt={p.name}
+                          style={{ width: 56, height: 56, objectFit: "cover", borderRadius: "6px", flexShrink: 0 }}
+                        />
+                      )}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 600, fontSize: "0.9rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                          {p.name}
+                          <span style={{ fontSize: "0.65rem", background: "#e3f2fd", color: "#1565c0", padding: "0.1rem 0.35rem", borderRadius: "3px", fontWeight: 600 }}>
+                            {p.embedding_count} embeddings
+                          </span>
+                          {at && (
+                            <span style={{ fontSize: "0.65rem", padding: "0.1rem 0.35rem", borderRadius: "3px", background: at.bg, color: at.color, fontWeight: 600 }}>
+                              {at.label}
+                            </span>
+                          )}
+                        </div>
+                        {p.description && <div style={{ fontSize: "0.75rem", color: "#666" }}>{p.description}</div>}
+                        <div style={{ fontSize: "0.65rem", color: "#999" }}>
+                          Criada em {formatDateTime(p.created_at)}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: "0.3rem", flexShrink: 0 }}>
+                        <button
+                          onClick={() => searchOpen ? setPersonSearchResult(null) : searchByPerson(p.id)}
+                          style={{ ...btn, background: "#1a1a2e", color: "#fff", padding: "0.3rem 0.6rem", fontSize: "0.75rem" }}
+                        >
+                          {searchOpen ? "Fechar" : "Buscar"}
+                        </button>
+                        {!p.watchlist_id && (
+                          <button
+                            onClick={() => {
+                              const type = prompt("Tipo de lista (suspect, banned, employee, vip):", "suspect");
+                              if (type) addPersonToWatchlist(p.id, type);
+                            }}
+                            style={{ ...btn, background: "#c62828", color: "#fff", padding: "0.3rem 0.6rem", fontSize: "0.75rem" }}
+                          >
+                            Watchlist
+                          </button>
+                        )}
+                        <button
+                          onClick={() => deletePerson(p.id)}
+                          style={{ ...btn, background: "#ffebee", color: "#c62828", padding: "0.3rem 0.6rem", fontSize: "0.75rem" }}
+                        >
+                          Excluir
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Person search results (expanded) */}
+                    {searchOpen && personSearchResult.result && (
+                      <div style={{ marginTop: "0.75rem", borderTop: "1px solid #eee", paddingTop: "0.75rem" }}>
+                        <div style={{ fontSize: "0.8rem", color: "#555", marginBottom: "0.4rem" }}>
+                          {personSearchResult.result.total} aparição(ões) ({personSearchResult.result.total_raw} detecções)
+                        </div>
+                        {personSearchResult.result.appearances.length > 0 ? (
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: "0.4rem", maxHeight: "300px", overflowY: "auto" }}>
+                            {personSearchResult.result.appearances.map((a) => (
+                              <div key={a.id} style={{ display: "flex", gap: "0.4rem", alignItems: "center", padding: "0.35rem",
+                                background: "#f5f5f5", borderRadius: "4px", border: "1px solid #e0e0e0" }}>
+                                {a.face_image && token && (
+                                  <img src={`${a.face_image}&token=${encodeURIComponent(token)}`} alt="Face"
+                                    style={{ width: 40, height: 40, objectFit: "cover", borderRadius: "4px", flexShrink: 0 }} />
+                                )}
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontWeight: 600, fontSize: "0.75rem", color: "#2e7d32" }}>
+                                    {(a.similarity * 100).toFixed(0)}% match
+                                    {a.detections > 1 && (
+                                      <span style={{ fontSize: "0.6rem", background: "#e3f2fd", color: "#1565c0", padding: "0.05rem 0.3rem", borderRadius: "3px", marginLeft: "0.3rem" }}>
+                                        {a.detections}x
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: "0.65rem", color: "#666" }}>{a.pdv_name} — {a.camera_name}</div>
+                                  <div style={{ fontSize: "0.65rem", color: "#999" }}>
+                                    {formatDateTime(a.first_seen)}
+                                    {a.first_seen !== a.last_seen && ` → ${formatDateTime(a.last_seen)}`}
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => navigate(`/playback?camera_id=${a.camera_id}&timestamp=${encodeURIComponent(a.detected_at)}`)}
+                                  style={{ padding: "0.15rem 0.35rem", borderRadius: "3px", border: "1px solid #1a1a2e",
+                                    background: "#1a1a2e", color: "#fff", cursor: "pointer", fontSize: "0.6rem", fontWeight: 600, flexShrink: 0 }}
+                                >
+                                  &#9654;
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ color: "#999", fontSize: "0.8rem" }}>Nenhuma aparição encontrada.</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
