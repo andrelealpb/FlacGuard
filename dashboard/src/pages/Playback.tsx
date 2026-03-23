@@ -52,6 +52,12 @@ interface FaceAppearance {
   detections: number;
 }
 
+interface PersonSummary {
+  id: string;
+  name: string;
+  embedding_count: number;
+}
+
 type PlaybackSpeed = 0.5 | 1 | 2 | 4;
 
 // ─── Helpers ───
@@ -918,6 +924,15 @@ function Playback() {
   // Face search state (manual click)
   const [faceSearchResults, setFaceSearchResults] = useState<FaceAppearance[] | null>(null);
   const [faceSearching, setFaceSearching] = useState(false);
+  const [searchPdvOnly, setSearchPdvOnly] = useState(true);
+  const searchPdvOnlyRef = useRef(true);
+  searchPdvOnlyRef.current = searchPdvOnly;
+  const currentPdvIdRef = useRef<string | undefined>(undefined);
+
+  // Add-to-person picker state
+  const [personPickerForId, setPersonPickerForId] = useState<string | null>(null); // embedding id being added
+  const [personsList, setPersonsList] = useState<PersonSummary[]>([]);
+  const [personsLoading, setPersonsLoading] = useState(false);
 
   // Auto cross-reference state (accumulated during playback)
   const [autoCrossRef, setAutoCrossRef] = useState<FaceAppearance[]>([]);
@@ -933,14 +948,19 @@ function Playback() {
     searchedEmbeddings.current.clear();
   }, [selectedRecording?.id]);
 
+  const selectedCamera = cameras.find((c) => c.id === selectedCameraId);
+  currentPdvIdRef.current = selectedCamera?.pdv_id;
+
   const handleFaceClick = async (embedding: number[]) => {
     setFaceSearching(true);
     setFaceSearchResults(null);
     try {
+      const body: Record<string, unknown> = { embedding, limit: 50, min_similarity: 0.45 };
+      if (searchPdvOnly && selectedCamera?.pdv_id) body.pdv_id = selectedCamera.pdv_id;
       const res = await apiFetch("/api/recordings/search-by-embedding", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ embedding, limit: 50, min_similarity: 0.45 }),
+        body: JSON.stringify(body),
       });
       if (res.ok) {
         const data = await res.json();
@@ -965,7 +985,10 @@ function Playback() {
         const res = await apiFetch("/api/recordings/search-by-embedding", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ embedding: face.embedding, limit: 50, min_similarity: 0.45 }),
+          body: JSON.stringify({
+            embedding: face.embedding, limit: 50, min_similarity: 0.45,
+            ...(searchPdvOnlyRef.current && currentPdvIdRef.current ? { pdv_id: currentPdvIdRef.current } : {}),
+          }),
         });
         if (res.ok) {
           const data = await res.json();
@@ -978,7 +1001,10 @@ function Playback() {
               const isNearExisting = (a: FaceAppearance) =>
                 prev.some((e) => e.camera_id === a.camera_id && Math.abs(getTs(e) - getTs(a)) < TIME_GAP_MS);
               const newItems = appearances.filter((a) => !isNearExisting(a));
-              return newItems.length > 0 ? [...prev, ...newItems] : prev;
+              if (newItems.length === 0) return prev;
+              const merged = [...prev, ...newItems];
+              merged.sort((a, b) => new Date(b.first_seen || b.detected_at).getTime() - new Date(a.first_seen || a.detected_at).getTime());
+              return merged;
             });
           }
         }
@@ -1069,7 +1095,6 @@ function Playback() {
     if (closest) setSelectedRecording(closest);
   };
 
-  const selectedCamera = cameras.find((c) => c.id === selectedCameraId);
   const displayDate = new Date(selectedDate + "T12:00:00");
   const today = isSameDay(displayDate);
 
@@ -1138,16 +1163,52 @@ function Playback() {
             {(faceSearching || faceSearchResults) && (
               <div style={{ background: "#fff", borderRadius: "6px", border: "1px solid #ddd", padding: "0.75rem", marginTop: "0.5rem" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-                  <div style={{ fontSize: "0.85rem", fontWeight: 600 }}>
-                    {faceSearching ? "Buscando aparições..." : `${faceSearchResults?.length || 0} momento(s) distinto(s)`}
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <div style={{ fontSize: "0.85rem", fontWeight: 600 }}>
+                      {faceSearching ? "Buscando aparições..." : `${faceSearchResults?.length || 0} momento(s) distinto(s)`}
+                    </div>
+                    <label style={{ display: "flex", alignItems: "center", gap: "0.2rem", fontSize: "0.65rem", color: "#666", cursor: "pointer" }}>
+                      <input type="checkbox" checked={searchPdvOnly} onChange={(e) => setSearchPdvOnly(e.target.checked)}
+                        style={{ width: 12, height: 12, cursor: "pointer" }} />
+                      Apenas este PDV
+                    </label>
                   </div>
-                  <button
-                    onClick={() => { setFaceSearchResults(null); setFaceSearching(false); }}
-                    style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.15rem 0.5rem",
-                      cursor: "pointer", fontSize: "0.75rem", color: "#666" }}
-                  >
-                    Fechar
-                  </button>
+                  <div style={{ display: "flex", gap: "0.3rem" }}>
+                    {faceSearchResults && faceSearchResults.length > 0 && (
+                      <button
+                        onClick={async () => {
+                          const personName = prompt("Nome para esta pessoa:");
+                          if (!personName) return;
+                          try {
+                            const ids = faceSearchResults.map((a) => a.id);
+                            const r = await apiFetch("/api/faces/persons", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ name: personName, face_embedding_ids: ids }),
+                            });
+                            if (r.ok) {
+                              const data = await r.json();
+                              alert(`Pessoa "${personName}" criada com ${data.embedding_count} embeddings!`);
+                            } else {
+                              const e = await r.json();
+                              alert(e.error || "Erro ao criar pessoa");
+                            }
+                          } catch { alert("Erro ao criar pessoa"); }
+                        }}
+                        style={{ background: "#1565c0", color: "#fff", border: "none", borderRadius: "4px", padding: "0.15rem 0.5rem",
+                          cursor: "pointer", fontSize: "0.7rem", fontWeight: 600 }}
+                      >
+                        Criar Pessoa
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { setFaceSearchResults(null); setFaceSearching(false); }}
+                      style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.15rem 0.5rem",
+                        cursor: "pointer", fontSize: "0.75rem", color: "#666" }}
+                    >
+                      Fechar
+                    </button>
+                  </div>
                 </div>
 
                 {faceSearchResults && faceSearchResults.length > 0 && (
@@ -1208,6 +1269,65 @@ function Playback() {
                           >
                             &#9888;
                           </button>
+                          <div style={{ position: "relative" }}>
+                            <button
+                              onClick={async () => {
+                                if (personPickerForId === a.id) { setPersonPickerForId(null); return; }
+                                setPersonPickerForId(a.id);
+                                setPersonsLoading(true);
+                                try {
+                                  const r = await apiFetch("/api/faces/persons");
+                                  if (r.ok) { const data = await r.json(); setPersonsList(data); }
+                                } catch { /* ignore */ }
+                                setPersonsLoading(false);
+                              }}
+                              style={{ padding: "0.15rem 0.35rem", borderRadius: "3px", border: "1px solid #1565c0",
+                                background: "#1565c0", color: "#fff", cursor: "pointer", fontSize: "0.55rem", fontWeight: 600 }}
+                              title="Adicionar a uma pessoa existente"
+                            >
+                              &#128100;+
+                            </button>
+                            {personPickerForId === a.id && (
+                              <div style={{ position: "absolute", right: 0, top: "100%", zIndex: 100, background: "#fff",
+                                border: "1px solid #ccc", borderRadius: "4px", boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                                minWidth: "180px", maxHeight: "200px", overflowY: "auto", marginTop: "2px" }}>
+                                {personsLoading ? (
+                                  <div style={{ padding: "0.5rem", fontSize: "0.7rem", color: "#999", textAlign: "center" }}>Carregando...</div>
+                                ) : personsList.length === 0 ? (
+                                  <div style={{ padding: "0.5rem", fontSize: "0.7rem", color: "#999", textAlign: "center" }}>Nenhuma pessoa cadastrada</div>
+                                ) : (
+                                  personsList.map((p) => (
+                                    <div key={p.id}
+                                      onClick={async () => {
+                                        try {
+                                          const r = await apiFetch(`/api/faces/persons/${p.id}/add-embeddings`, {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ face_embedding_ids: [a.id] }),
+                                          });
+                                          if (r.ok) {
+                                            const data = await r.json();
+                                            alert(`Embedding adicionado a "${p.name}" (${data.embedding_count} total)`);
+                                          } else {
+                                            const e = await r.json();
+                                            alert(e.error || "Erro ao adicionar");
+                                          }
+                                        } catch { alert("Erro ao adicionar embedding"); }
+                                        setPersonPickerForId(null);
+                                      }}
+                                      style={{ padding: "0.35rem 0.5rem", cursor: "pointer", fontSize: "0.7rem",
+                                        borderBottom: "1px solid #f0f0f0", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                                      onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = "#e3f2fd"; }}
+                                      onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = ""; }}
+                                    >
+                                      <span style={{ fontWeight: 500 }}>{p.name}</span>
+                                      <span style={{ fontSize: "0.6rem", color: "#999" }}>{p.embedding_count} emb</span>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -1317,6 +1437,65 @@ function Playback() {
                           >
                             &#9888;
                           </button>
+                          <div style={{ position: "relative" }}>
+                            <button
+                              onClick={async () => {
+                                if (personPickerForId === a.id) { setPersonPickerForId(null); return; }
+                                setPersonPickerForId(a.id);
+                                setPersonsLoading(true);
+                                try {
+                                  const r = await apiFetch("/api/faces/persons");
+                                  if (r.ok) { const data = await r.json(); setPersonsList(data); }
+                                } catch { /* ignore */ }
+                                setPersonsLoading(false);
+                              }}
+                              style={{ padding: "0.15rem 0.35rem", borderRadius: "3px", border: "1px solid #1565c0",
+                                background: "#1565c0", color: "#fff", cursor: "pointer", fontSize: "0.55rem", fontWeight: 600 }}
+                              title="Adicionar a uma pessoa existente"
+                            >
+                              &#128100;+
+                            </button>
+                            {personPickerForId === a.id && (
+                              <div style={{ position: "absolute", right: 0, top: "100%", zIndex: 100, background: "#fff",
+                                border: "1px solid #ccc", borderRadius: "4px", boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                                minWidth: "180px", maxHeight: "200px", overflowY: "auto", marginTop: "2px" }}>
+                                {personsLoading ? (
+                                  <div style={{ padding: "0.5rem", fontSize: "0.7rem", color: "#999", textAlign: "center" }}>Carregando...</div>
+                                ) : personsList.length === 0 ? (
+                                  <div style={{ padding: "0.5rem", fontSize: "0.7rem", color: "#999", textAlign: "center" }}>Nenhuma pessoa cadastrada</div>
+                                ) : (
+                                  personsList.map((p) => (
+                                    <div key={p.id}
+                                      onClick={async () => {
+                                        try {
+                                          const r = await apiFetch(`/api/faces/persons/${p.id}/add-embeddings`, {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ face_embedding_ids: [a.id] }),
+                                          });
+                                          if (r.ok) {
+                                            const data = await r.json();
+                                            alert(`Embedding adicionado a "${p.name}" (${data.embedding_count} total)`);
+                                          } else {
+                                            const e = await r.json();
+                                            alert(e.error || "Erro ao adicionar");
+                                          }
+                                        } catch { alert("Erro ao adicionar embedding"); }
+                                        setPersonPickerForId(null);
+                                      }}
+                                      style={{ padding: "0.35rem 0.5rem", cursor: "pointer", fontSize: "0.7rem",
+                                        borderBottom: "1px solid #f0f0f0", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                                      onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = "#e3f2fd"; }}
+                                      onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = ""; }}
+                                    >
+                                      <span style={{ fontWeight: 500 }}>{p.name}</span>
+                                      <span style={{ fontSize: "0.6rem", color: "#999" }}>{p.embedding_count} emb</span>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     ))}

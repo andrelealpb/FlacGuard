@@ -105,8 +105,8 @@ router.post('/search', authenticate, authorize('admin'), async (req, res) => {
       }
     }
 
-    // Sort grouped results by best similarity descending
-    grouped.sort((a, b) => b.similarity - a.similarity);
+    // Sort grouped results by most recent first
+    grouped.sort((a, b) => new Date(b.first_seen).getTime() - new Date(a.first_seen).getTime());
 
     res.json({
       query_confidence: confidence,
@@ -338,6 +338,442 @@ router.delete('/watchlist/:id', authenticate, authorize('admin'), async (req, re
     }
 
     res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Persons ───
+
+const PERSONS_DIR = '/data/recordings/persons';
+if (!existsSync(PERSONS_DIR)) {
+  try { mkdirSync(PERSONS_DIR, { recursive: true }); } catch { /* ok */ }
+}
+
+// GET /api/faces/persons — List all persons
+router.get('/persons', authenticate, authorize('admin'), async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT p.*,
+        (SELECT COUNT(*) FROM face_embeddings fe WHERE fe.person_id = p.id) AS embedding_count,
+        (SELECT fw.id FROM face_watchlist fw WHERE fw.person_id = p.id AND fw.is_active = true LIMIT 1) AS watchlist_id,
+        (SELECT fw.alert_type FROM face_watchlist fw WHERE fw.person_id = p.id AND fw.is_active = true LIMIT 1) AS alert_type
+      FROM persons p
+      ORDER BY p.updated_at DESC
+    `);
+    res.json(rows.map((r) => ({
+      ...r,
+      embedding_count: parseInt(r.embedding_count),
+      photo_url: r.photo_path ? `/api/faces/image?path=${encodeURIComponent(r.photo_path)}` : null,
+    })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/faces/persons/:id — Get person details with embeddings
+router.get('/persons/:id', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM persons WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Person not found' });
+
+    const person = rows[0];
+    person.photo_url = person.photo_path ? `/api/faces/image?path=${encodeURIComponent(person.photo_path)}` : null;
+
+    // Get all linked embeddings (distinct face appearances)
+    const { rows: embeddings } = await pool.query(`
+      SELECT fe.id, fe.camera_id, fe.face_image, fe.confidence, fe.detected_at,
+             c.name AS camera_name, p.name AS pdv_name
+      FROM face_embeddings fe
+      JOIN cameras c ON c.id = fe.camera_id
+      JOIN pdvs p ON p.id = c.pdv_id
+      WHERE fe.person_id = $1
+      ORDER BY fe.detected_at DESC
+    `, [req.params.id]);
+
+    person.embeddings = embeddings.map((e) => ({
+      ...e,
+      face_image: e.face_image ? `/api/faces/image?path=${encodeURIComponent(e.face_image)}` : null,
+    }));
+
+    // Get watchlist link if any
+    const { rows: wl } = await pool.query(
+      'SELECT id, name, alert_type, is_active FROM face_watchlist WHERE person_id = $1',
+      [req.params.id]
+    );
+    person.watchlist = wl[0] || null;
+
+    res.json(person);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/faces/persons — Create a person from face embedding IDs
+router.post('/persons', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { name, description, face_embedding_ids } = req.body;
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    if (!face_embedding_ids || !Array.isArray(face_embedding_ids) || face_embedding_ids.length === 0) {
+      return res.status(400).json({ error: 'face_embedding_ids array is required (at least 1)' });
+    }
+
+    const userId = req.auth?.user?.id || null;
+
+    // Get the best face crop as representative photo (highest confidence)
+    const { rows: bestFace } = await pool.query(`
+      SELECT face_image, confidence FROM face_embeddings
+      WHERE id = ANY($1) AND face_image IS NOT NULL
+      ORDER BY confidence DESC LIMIT 1
+    `, [face_embedding_ids]);
+
+    let photoPath = null;
+    if (bestFace.length > 0 && bestFace[0].face_image && existsSync(bestFace[0].face_image)) {
+      const filename = `person-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+      photoPath = join(PERSONS_DIR, filename);
+      writeFileSync(photoPath, readFileSync(bestFace[0].face_image));
+    }
+
+    // Create person
+    const { rows: inserted } = await pool.query(
+      `INSERT INTO persons (name, description, photo_path, created_by)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [name, description || null, photoPath, userId]
+    );
+    const person = inserted[0];
+
+    // Link all selected embeddings to this person
+    await pool.query(
+      'UPDATE face_embeddings SET person_id = $1 WHERE id = ANY($2)',
+      [person.id, face_embedding_ids]
+    );
+
+    // Also link any other embeddings that share the same auto-generated person_id
+    // (i.e., embeddings the system already grouped as same person)
+    const { rows: linkedPersonIds } = await pool.query(
+      'SELECT DISTINCT person_id FROM face_embeddings WHERE id = ANY($1) AND person_id IS NOT NULL',
+      [face_embedding_ids]
+    );
+    if (linkedPersonIds.length > 0) {
+      const oldPersonIds = linkedPersonIds.map(r => r.person_id).filter(pid => pid !== person.id);
+      if (oldPersonIds.length > 0) {
+        await pool.query(
+          'UPDATE face_embeddings SET person_id = $1 WHERE person_id = ANY($2)',
+          [person.id, oldPersonIds]
+        );
+      }
+    }
+
+    const { rows: countRows } = await pool.query(
+      'SELECT COUNT(*) AS total FROM face_embeddings WHERE person_id = $1',
+      [person.id]
+    );
+
+    console.log(`[Face] Person created: "${name}" with ${countRows[0].total} embeddings`);
+
+    res.status(201).json({
+      ...person,
+      photo_url: photoPath ? `/api/faces/image?path=${encodeURIComponent(photoPath)}` : null,
+      embedding_count: parseInt(countRows[0].total),
+    });
+  } catch (err) {
+    console.error('[Faces] Person create error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/faces/persons/from-embedding — Create a person from a single embedding (auto-finds all related)
+router.post('/persons/from-embedding', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { name, description, embedding, min_similarity = 0.55 } = req.body;
+    if (!name) return res.status(400).json({ error: 'name is required' });
+    if (!embedding || !Array.isArray(embedding)) {
+      return res.status(400).json({ error: 'embedding array is required' });
+    }
+
+    const userId = req.auth?.user?.id || null;
+    const embeddingStr = `[${embedding.join(',')}]`;
+
+    // Find all similar embeddings in the database
+    const { rows: matches } = await pool.query(`
+      SELECT id, face_image, confidence, detected_at,
+             1 - (embedding <=> $1::vector) AS similarity
+      FROM face_embeddings
+      WHERE 1 - (embedding <=> $1::vector) >= $2
+      ORDER BY detected_at DESC
+    `, [embeddingStr, min_similarity]);
+
+    if (matches.length === 0) {
+      return res.status(400).json({ error: 'Nenhum embedding similar encontrado' });
+    }
+
+    // Use best confidence face as representative photo
+    const bestFace = [...matches].sort((a, b) => b.confidence - a.confidence)[0];
+    let photoPath = null;
+    if (bestFace.face_image && existsSync(bestFace.face_image)) {
+      const filename = `person-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+      photoPath = join(PERSONS_DIR, filename);
+      writeFileSync(photoPath, readFileSync(bestFace.face_image));
+    }
+
+    // Create person
+    const { rows: inserted } = await pool.query(
+      `INSERT INTO persons (name, description, photo_path, created_by)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [name, description || null, photoPath, userId]
+    );
+    const person = inserted[0];
+
+    // Link all matching embeddings
+    const matchIds = matches.map(m => m.id);
+    await pool.query(
+      'UPDATE face_embeddings SET person_id = $1 WHERE id = ANY($2)',
+      [person.id, matchIds]
+    );
+
+    console.log(`[Face] Person created from embedding: "${name}" with ${matches.length} embeddings`);
+
+    res.status(201).json({
+      ...person,
+      photo_url: photoPath ? `/api/faces/image?path=${encodeURIComponent(photoPath)}` : null,
+      embedding_count: matches.length,
+    });
+  } catch (err) {
+    console.error('[Faces] Person from embedding error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/faces/persons/:id — Update person details
+router.patch('/persons/:id', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    const updates = [];
+    const values = [];
+    let idx = 1;
+
+    if (name !== undefined) { updates.push(`name = $${idx++}`); values.push(name); }
+    if (description !== undefined) { updates.push(`description = $${idx++}`); values.push(description); }
+    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+    updates.push('updated_at = now()');
+    values.push(req.params.id);
+
+    const { rows } = await pool.query(
+      `UPDATE persons SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Person not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/faces/persons/:id/add-embeddings — Add more embeddings to a person
+router.post('/persons/:id/add-embeddings', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { face_embedding_ids } = req.body;
+    if (!face_embedding_ids || !Array.isArray(face_embedding_ids) || face_embedding_ids.length === 0) {
+      return res.status(400).json({ error: 'face_embedding_ids array is required' });
+    }
+
+    // Verify person exists
+    const { rows: person } = await pool.query('SELECT id FROM persons WHERE id = $1', [req.params.id]);
+    if (person.length === 0) return res.status(404).json({ error: 'Person not found' });
+
+    await pool.query(
+      'UPDATE face_embeddings SET person_id = $1 WHERE id = ANY($2)',
+      [req.params.id, face_embedding_ids]
+    );
+
+    await pool.query('UPDATE persons SET updated_at = now() WHERE id = $1', [req.params.id]);
+
+    const { rows: countRows } = await pool.query(
+      'SELECT COUNT(*) AS total FROM face_embeddings WHERE person_id = $1',
+      [req.params.id]
+    );
+
+    res.json({ embedding_count: parseInt(countRows[0].total) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/faces/persons/:id/search — Search using all embeddings of a person (multi-embedding search)
+router.post('/persons/:id/search', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { limit = 50, min_similarity = 0.45, camera_ids, from, to } = req.body;
+
+    // Get all embeddings for this person
+    const { rows: personEmbeddings } = await pool.query(
+      'SELECT embedding FROM face_embeddings WHERE person_id = $1',
+      [req.params.id]
+    );
+    if (personEmbeddings.length === 0) {
+      return res.status(400).json({ error: 'Person has no embeddings' });
+    }
+
+    // Search with each embedding and merge results (take best similarity per match)
+    const allResults = new Map();
+    for (const pe of personEmbeddings) {
+      const embeddingArr = typeof pe.embedding === 'string'
+        ? pe.embedding.replace(/[\[\]]/g, '').split(',').map(Number)
+        : pe.embedding;
+      const results = await searchFace(embeddingArr, {
+        limit: limit * 2, // fetch more to account for dedup
+        minSimilarity: min_similarity,
+        cameraIds: camera_ids,
+        from,
+        to,
+      });
+      for (const r of results) {
+        const existing = allResults.get(r.id);
+        if (!existing || parseFloat(r.similarity) > parseFloat(existing.similarity)) {
+          allResults.set(r.id, r);
+        }
+      }
+    }
+
+    // Convert to array, sort by date DESC
+    const results = Array.from(allResults.values())
+      .sort((a, b) => new Date(b.detected_at).getTime() - new Date(a.detected_at).getTime())
+      .slice(0, limit);
+
+    const appearances = results.map((r) => ({
+      id: r.id,
+      camera_id: r.camera_id,
+      camera_name: r.camera_name,
+      pdv_id: r.pdv_id,
+      pdv_name: r.pdv_name,
+      similarity: parseFloat(parseFloat(r.similarity).toFixed(3)),
+      confidence: r.confidence,
+      detected_at: r.detected_at,
+      face_image: r.face_image ? `/api/faces/image?path=${encodeURIComponent(r.face_image)}` : null,
+    }));
+
+    // Group by 5-min windows
+    const TIME_GAP_MS = 5 * 60 * 1000;
+    const grouped = [];
+    const sortedForGrouping = [...appearances].sort((a, b) => {
+      if (a.camera_id !== b.camera_id) return a.camera_id.localeCompare(b.camera_id);
+      return new Date(a.detected_at).getTime() - new Date(b.detected_at).getTime();
+    });
+
+    for (const app of sortedForGrouping) {
+      const t = new Date(app.detected_at).getTime();
+      const existing = grouped.find(
+        (g) => g.camera_id === app.camera_id && Math.abs(t - new Date(g.last_seen).getTime()) <= TIME_GAP_MS
+      );
+      if (existing) {
+        existing.detections++;
+        if (t < new Date(existing.first_seen).getTime()) existing.first_seen = app.detected_at;
+        if (t > new Date(existing.last_seen).getTime()) existing.last_seen = app.detected_at;
+        if (app.similarity > existing.similarity) {
+          existing.id = app.id;
+          existing.similarity = app.similarity;
+          existing.confidence = app.confidence;
+          existing.face_image = app.face_image;
+        }
+      } else {
+        grouped.push({ ...app, first_seen: app.detected_at, last_seen: app.detected_at, detections: 1 });
+      }
+    }
+
+    grouped.sort((a, b) => new Date(b.first_seen).getTime() - new Date(a.first_seen).getTime());
+
+    // Audit log
+    const userId = req.auth?.user?.id;
+    if (userId) {
+      await pool.query(
+        'INSERT INTO face_search_log (user_id, reason, results) VALUES ($1, $2, $3)',
+        [userId, `person-search:${req.params.id}`, grouped.length]
+      );
+    }
+
+    res.json({ total: grouped.length, total_raw: appearances.length, appearances: grouped });
+  } catch (err) {
+    console.error('[Faces] Person search error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/faces/persons/:id — Delete a person (unlinks embeddings, does not delete them)
+router.delete('/persons/:id', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    // Unlink embeddings (don't delete them — they're still useful for search)
+    await pool.query(
+      'UPDATE face_embeddings SET person_id = NULL WHERE person_id = $1',
+      [req.params.id]
+    );
+
+    // Unlink from watchlist
+    await pool.query(
+      'UPDATE face_watchlist SET person_id = NULL WHERE person_id = $1',
+      [req.params.id]
+    );
+
+    const { rows } = await pool.query(
+      'DELETE FROM persons WHERE id = $1 RETURNING id, photo_path',
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Person not found' });
+
+    if (rows[0].photo_path && existsSync(rows[0].photo_path)) {
+      try { unlinkSync(rows[0].photo_path); } catch { /* ok */ }
+    }
+
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/faces/persons/:id/watchlist — Add person to watchlist (uses all their embeddings)
+router.post('/persons/:id/watchlist', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { alert_type = 'suspect' } = req.body;
+
+    const { rows: person } = await pool.query('SELECT * FROM persons WHERE id = $1', [req.params.id]);
+    if (person.length === 0) return res.status(404).json({ error: 'Person not found' });
+
+    // Check if already on watchlist
+    const { rows: existing } = await pool.query(
+      'SELECT id FROM face_watchlist WHERE person_id = $1',
+      [req.params.id]
+    );
+    if (existing.length > 0) {
+      return res.status(409).json({ error: 'Person already on watchlist', watchlist_id: existing[0].id });
+    }
+
+    // Get a representative embedding (best confidence)
+    const { rows: bestEmb } = await pool.query(`
+      SELECT embedding, confidence FROM face_embeddings
+      WHERE person_id = $1 ORDER BY confidence DESC LIMIT 1
+    `, [req.params.id]);
+
+    if (bestEmb.length === 0) {
+      return res.status(400).json({ error: 'Person has no embeddings' });
+    }
+
+    const embeddingStr = typeof bestEmb[0].embedding === 'string'
+      ? bestEmb[0].embedding
+      : `[${bestEmb[0].embedding.join(',')}]`;
+    const userId = req.auth?.user?.id || null;
+    const photoPath = person[0].photo_path;
+
+    const { rows: inserted } = await pool.query(
+      `INSERT INTO face_watchlist (name, description, photo_path, embedding, alert_type, person_id, created_by)
+       VALUES ($1, $2, $3, $4::vector, $5, $6, $7)
+       RETURNING id, name, alert_type, created_at`,
+      [person[0].name, person[0].description, photoPath, embeddingStr, alert_type, req.params.id, userId]
+    );
+
+    console.log(`[Face] Person "${person[0].name}" added to watchlist as ${alert_type}`);
+
+    res.status(201).json(inserted[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -336,12 +336,12 @@ router.post('/:id/detect-faces', authenticate, async (req, res) => {
 // POST /api/recordings/search-by-embedding — Search for a person by embedding vector
 router.post('/search-by-embedding', authenticate, async (req, res) => {
   try {
-    const { embedding, limit = 50, min_similarity = 0.45 } = req.body;
+    const { embedding, limit = 50, min_similarity = 0.45, pdv_id } = req.body;
     if (!embedding || !Array.isArray(embedding)) {
       return res.status(400).json({ error: 'embedding array is required' });
     }
 
-    const results = await searchFace(embedding, { limit, minSimilarity: min_similarity });
+    const results = await searchFace(embedding, { limit, minSimilarity: min_similarity, pdvId: pdv_id || undefined });
 
     // Audit log
     const userId = req.auth?.user?.id;
@@ -392,7 +392,8 @@ router.post('/search-by-embedding', authenticate, async (req, res) => {
       }
     }
 
-    grouped.sort((a, b) => b.similarity - a.similarity);
+    // Sort by most recent first
+    grouped.sort((a, b) => new Date(b.first_seen).getTime() - new Date(a.first_seen).getTime());
 
     res.json({ total: grouped.length, total_raw: appearances.length, appearances: grouped });
   } catch (err) {
