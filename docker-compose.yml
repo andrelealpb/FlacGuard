@@ -36,6 +36,8 @@ services:
       - S3_FACES_PREFIX=${S3_FACES_PREFIX:-faces}
       - S3_WATCHLIST_PREFIX=${S3_WATCHLIST_PREFIX:-watchlist}
       - S3_QUOTA_GB=${S3_QUOTA_GB:-250}
+      - CONTROL_API_URL=${CONTROL_API_URL:-https://api.flactech.com.br}
+      - NODE_API_KEY=${NODE_API_KEY:-}
     volumes:
       - recordings:/data/recordings
       - ./deploy-status.json:/app/deploy-status.json:ro

@@ -5,6 +5,7 @@ import { authenticate } from '../services/auth.js';
 import { generateStreamKey, getHlsUrl, getRtmpUrl, getRtmpPublicUrl, getHlsPublicUrl } from '../services/rtmp.js';
 import { findRecordingByTimestamp, listRecordings } from '../services/recording.js';
 import { getTenantId, getTenantSlug } from '../services/tenant.js';
+import { reportUsageAsync } from '../services/usage-reporter.js';
 
 const router = Router();
 
@@ -247,6 +248,10 @@ router.post('/', authenticate, async (req, res) => {
        purposeVal, captureFaceVal, tenantId]
     );
     const camera = rows[0];
+
+    // Report usage change to control API
+    reportUsageAsync(tenantId);
+
     res.status(201).json({
       ...camera,
       rtmp_url: getRtmpUrl(camera.stream_key),
@@ -386,6 +391,10 @@ router.delete('/:id', authenticate, async (req, res) => {
       [req.params.id, tenantId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Camera not found' });
+
+    // Report usage change to control API
+    reportUsageAsync(tenantId);
+
     res.json({ message: 'Camera deleted', camera: rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });

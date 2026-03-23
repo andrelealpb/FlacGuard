@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'fs';
 import { pool } from '../db/pool.js';
 import { onCameraOnline, onCameraOffline } from '../services/motion-detector.js';
 import { startContinuousRecording, stopRecording } from '../services/recorder.js';
+import { reportUsageAsync } from '../services/usage-reporter.js';
 
 const router = Router();
 
@@ -12,7 +13,7 @@ router.get('/on-publish', async (req, res) => {
     const { name: streamKey, addr } = req.query;
 
     // Validate stream key — fetch all and match in JS to debug DB query issue
-    const { rows: allCams } = await pool.query('SELECT id, stream_key, name FROM cameras');
+    const { rows: allCams } = await pool.query('SELECT id, stream_key, name, tenant_id FROM cameras');
     const camera = allCams.find(c => c.stream_key === streamKey);
 
     if (!camera) {
@@ -45,6 +46,9 @@ router.get('/on-publish', async (req, res) => {
 
     // Notify motion detector that camera is online
     onCameraOnline(camera.id);
+
+    // Report usage change to control API
+    reportUsageAsync(camera.tenant_id);
 
     // Start continuous recording if configured
     if (camera.recording_mode === 'continuous') {
@@ -79,7 +83,7 @@ router.get('/on-publish-done', async (req, res) => {
 
     const { rows } = await pool.query(
       `UPDATE cameras SET status = 'offline', updated_at = now()
-       WHERE stream_key = $1 RETURNING id, name`,
+       WHERE stream_key = $1 RETURNING id, name, tenant_id`,
       [streamKey]
     );
 
@@ -92,6 +96,9 @@ router.get('/on-publish-done', async (req, res) => {
       // Notify motion detector and stop any recording
       onCameraOffline(rows[0].id);
       stopRecording(rows[0].id);
+
+      // Report usage change to control API
+      reportUsageAsync(rows[0].tenant_id);
     }
 
     console.log(`Stream stopped: ${streamKey}`);
