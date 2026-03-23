@@ -13,7 +13,9 @@ interface Camera {
 interface SimultaneousVideo {
   camera: Camera;
   recording: Recording;
-  seekOffset: number; // seconds into the recording to seek for sync
+  /** Seconds from parent recording start until this sibling recording starts.
+   *  Positive = sibling starts later than parent. Can be negative if sibling starts before. */
+  delayFromParent: number;
 }
 
 interface Recording {
@@ -249,20 +251,22 @@ function VideoPlayer({
     : [];
   const hasMultiCam = siblingCameras.length > 0;
 
+  const siblingVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
+
   const loadMultiCamVideos = useCallback(async () => {
     if (!hasMultiCam || !recording) return;
     setMultiCamLoading(true);
     setMultiCamVideos([]);
-    const recStartLocal = parseLocalTime(recording.started_at);
-    const recStartSec = recStartLocal.h * 3600 + recStartLocal.m * 60 + recStartLocal.s;
-    const currentPlaySec = recStartSec + Math.floor(videoRef.current?.currentTime || 0);
+    siblingVideoRefs.current.clear();
+    const parentStartLocal = parseLocalTime(recording.started_at);
+    const parentStartSec = parentStartLocal.h * 3600 + parentStartLocal.m * 60 + parentStartLocal.s;
+    const currentPlaySec = parentStartSec + Math.floor(videoRef.current?.currentTime || 0);
     // Build ISO timestamp from the recording date + current play position
     const dateMatch = recording.started_at.match(/(\d{4}-\d{2}-\d{2})/);
     const dateStr = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);
     const h = Math.floor(currentPlaySec / 3600) % 24;
     const m = Math.floor((currentPlaySec % 3600) / 60);
     const s = currentPlaySec % 60;
-    // Preserve timezone offset from original recording to avoid UTC mismatch
     const tzMatch = recording.started_at.match(/([+-]\d{2}(?::\d{2})?)$/);
     const tzSuffix = tzMatch ? tzMatch[1] : '';
     const ts = `${dateStr}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}${tzSuffix}`;
@@ -276,12 +280,12 @@ function VideoPlayer({
           if (res.ok) {
             const rec = await res.json();
             if (rec && !rec.error) {
-              // Calculate seek offset: how many seconds into the sibling recording
-              // corresponds to the main player's current timestamp
               const sibStart = parseLocalTime(rec.started_at);
               const sibStartSec = sibStart.h * 3600 + sibStart.m * 60 + sibStart.s;
-              const seekOffset = Math.max(0, currentPlaySec - sibStartSec);
-              results.push({ camera: cam, recording: rec, seekOffset });
+              // delayFromParent: how many seconds after parent start does sibling start
+              // Example: parent=14:59:39 sibling=15:00:38 → delay = 59
+              const delayFromParent = sibStartSec - parentStartSec;
+              results.push({ camera: cam, recording: rec, delayFromParent });
             }
           }
         } catch { /* skip */ }
@@ -469,15 +473,72 @@ function VideoPlayer({
     canvas.style.cursor = hovered ? "pointer" : "default";
   };
 
+  // ─── Sibling video sync ───
+  // Sync all sibling videos to match the parent's current absolute time.
+  // Called on every parent timeUpdate, play, pause, seek, and speed change.
+  const syncSiblings = useCallback((parentCurrentTime: number, action?: 'play' | 'pause' | 'seek') => {
+    if (multiCamVideos.length === 0) return;
+    const parentVideo = videoRef.current;
+    if (!parentVideo) return;
+
+    for (const mv of multiCamVideos) {
+      const sibVid = siblingVideoRefs.current.get(mv.camera.id);
+      if (!sibVid) continue;
+
+      // How far into the sibling's timeline is the parent?
+      // siblingTime = parentCurrentTime - delayFromParent
+      // If negative, sibling hasn't started yet
+      const siblingTime = parentCurrentTime - mv.delayFromParent;
+
+      if (siblingTime < 0) {
+        // Sibling recording hasn't started yet at this parent time
+        if (!sibVid.paused) sibVid.pause();
+        sibVid.currentTime = 0;
+        continue;
+      }
+
+      if (siblingTime > sibVid.duration && sibVid.duration > 0) {
+        // Past the end of sibling recording
+        if (!sibVid.paused) sibVid.pause();
+        continue;
+      }
+
+      // Sync position — only seek if drift > 1 second (avoid constant micro-seeks)
+      const drift = Math.abs(sibVid.currentTime - siblingTime);
+      if (drift > 1 || action === 'seek') {
+        sibVid.currentTime = siblingTime;
+      }
+
+      // Sync play/pause state
+      if (action === 'pause' || parentVideo.paused) {
+        if (!sibVid.paused) sibVid.pause();
+      } else if (action === 'play' || !parentVideo.paused) {
+        if (sibVid.paused && siblingTime >= 0) sibVid.play().catch(() => {});
+      }
+
+      // Sync playback rate
+      if (sibVid.playbackRate !== parentVideo.playbackRate) {
+        sibVid.playbackRate = parentVideo.playbackRate;
+      }
+    }
+  }, [multiCamVideos]);
+
   const togglePlay = useCallback(() => {
     const v = videoRef.current; if (!v) return;
-    if (v.paused) { v.play().catch(() => {}); } else { v.pause(); }
-  }, []);
+    if (v.paused) {
+      v.play().catch(() => {});
+      syncSiblings(v.currentTime, 'play');
+    } else {
+      v.pause();
+      syncSiblings(v.currentTime, 'pause');
+    }
+  }, [syncSiblings]);
 
   const skip = useCallback((sec: number) => {
     const v = videoRef.current; if (!v) return;
     v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + sec));
-  }, []);
+    syncSiblings(v.currentTime, 'seek');
+  }, [syncSiblings]);
 
   const goToPrev = useCallback(() => {
     const idx = recordings.findIndex((r) => r.id === recording.id);
@@ -564,9 +625,14 @@ function VideoPlayer({
         <video ref={videoRef} src={streamUrl}
           style={{ width: "100%", display: "block", background: "#000",
             ...(isFullscreen ? { maxHeight: "100%", objectFit: "contain" } : { maxHeight: "75vh" }) }}
-          onTimeUpdate={() => setCurrent(videoRef.current?.currentTime || 0)}
+          onTimeUpdate={() => {
+            const t = videoRef.current?.currentTime || 0;
+            setCurrent(t);
+            syncSiblings(t);
+          }}
           onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
-          onPlay={() => setPlaying(true)} onPause={handlePause}
+          onPlay={() => { setPlaying(true); syncSiblings(videoRef.current?.currentTime || 0, 'play'); }}
+          onPause={() => { handlePause(); syncSiblings(videoRef.current?.currentTime || 0, 'pause'); }}
           onEnded={() => { setPlaying(false); goToNext(); }}
           onError={() => setError("Erro ao carregar vídeo")}
           playsInline />
@@ -609,7 +675,7 @@ function VideoPlayer({
       {/* Progress */}
       <div style={{ padding: "0 0.4rem", background: "#111" }}>
         <input type="range" min={0} max={duration || 1} step={0.1} value={currentTime}
-          onChange={(e) => { if (videoRef.current) videoRef.current.currentTime = parseFloat(e.target.value); }}
+          onChange={(e) => { if (videoRef.current) { const t = parseFloat(e.target.value); videoRef.current.currentTime = t; syncSiblings(t, 'seek'); } }}
           style={{ width: "100%", height: "4px", cursor: "pointer", accentColor: "#4caf50" }} />
       </div>
 
@@ -638,7 +704,7 @@ function VideoPlayer({
           <span>{formatDuration(currentTime)}/{formatDuration(duration)}</span>
           <div style={{ display: "flex", gap: "1px", background: "rgba(255,255,255,0.05)", borderRadius: "3px" }}>
             {speeds.map((s) => (
-              <button key={s} onClick={() => { setSpeed(s); if (videoRef.current) videoRef.current.playbackRate = s; }}
+              <button key={s} onClick={() => { setSpeed(s); if (videoRef.current) { videoRef.current.playbackRate = s; syncSiblings(videoRef.current.currentTime); } }}
                 style={{ ...cb, fontSize: "0.65rem", fontWeight: speed === s ? 700 : 400, opacity: speed === s ? 1 : 0.5,
                   background: speed === s ? "rgba(255,255,255,0.15)" : "none", borderRadius: "2px", padding: "0.15rem 0.3rem" }}>
                 {s}x
@@ -728,24 +794,42 @@ function VideoPlayer({
     </div>
 
     {/* Multi-camera simultaneous playback - sibling videos in grid */}
-    {multiCamActive && multiCamVideos.map((mv) => (
-      <div key={mv.camera.id}
-        onClick={() => onSwitchToCamera(mv.camera.id, mv.recording.started_at)}
-        style={{ background: "#000", borderRadius: "6px", overflow: "hidden", border: "1px solid #333", cursor: "pointer", position: "relative" }}
-        title={`Abrir ${mv.camera.name} como vídeo principal`}
-      >
-        <div style={{ padding: "0.15rem 0.4rem", background: "#1565c0", color: "#fff",
-          fontSize: "0.6rem", fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
-          <span>{mv.camera.name}</span>
-          <span style={{ opacity: 0.8 }}>{formatTime(mv.recording.started_at)} — {formatTime(mv.recording.ended_at || mv.recording.started_at)}</span>
+    {multiCamActive && multiCamVideos.map((mv) => {
+      // Is the sibling video currently before its start time?
+      const siblingTime = currentTime - mv.delayFromParent;
+      const notStartedYet = siblingTime < 0;
+      const waitSec = Math.ceil(-siblingTime);
+      return (
+        <div key={mv.camera.id}
+          onClick={() => onSwitchToCamera(mv.camera.id, mv.recording.started_at)}
+          style={{ background: "#000", borderRadius: "6px", overflow: "hidden", border: "1px solid #333", cursor: "pointer", position: "relative" }}
+          title={`Abrir ${mv.camera.name} como vídeo principal`}
+        >
+          <div style={{ padding: "0.15rem 0.4rem", background: "#1565c0", color: "#fff",
+            fontSize: "0.6rem", fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+            <span>{mv.camera.name}</span>
+            <span style={{ opacity: 0.8 }}>{formatTime(mv.recording.started_at)} — {formatTime(mv.recording.ended_at || mv.recording.started_at)}</span>
+          </div>
+          <div style={{ position: "relative" }}>
+            <video
+              ref={(el) => { if (el) siblingVideoRefs.current.set(mv.camera.id, el); else siblingVideoRefs.current.delete(mv.camera.id); }}
+              src={`/api/recordings/${mv.recording.id}/stream?token=${encodeURIComponent(token)}`}
+              style={{ width: "100%", display: "block", pointerEvents: "none" }}
+              muted playsInline preload="auto"
+            />
+            {notStartedYet && (
+              <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.85)", display: "flex",
+                flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#fff" }}>
+                <div style={{ fontSize: "0.7rem", opacity: 0.7, marginBottom: "0.2rem" }}>Aguardando sincronização</div>
+                <div style={{ fontSize: "1.2rem", fontFamily: "monospace", fontWeight: 700 }}>
+                  {formatDuration(waitSec)}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-        <video
-          src={`/api/recordings/${mv.recording.id}/stream?token=${encodeURIComponent(token)}${mv.seekOffset > 0 ? `&start=${mv.seekOffset}` : ''}`}
-          style={{ width: "100%", display: "block", pointerEvents: "none" }}
-          autoPlay muted playsInline
-        />
-      </div>
-    ))}
+      );
+    })}
     {showMultiCam && !multiCamActive && !multiCamLoading && (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", color: "#999", fontSize: "0.75rem", padding: "1rem",
         background: "#000", borderRadius: "6px", border: "1px solid #333" }}>
