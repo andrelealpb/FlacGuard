@@ -565,40 +565,58 @@ O callback `on_publish` no hooks.js identifica o tenant pela stream key e valida
 
 ---
 
-## Ordem de Implementação
+## Ordem de Implementação — Status (Março 2026)
 
 ### Passo 1: Upgrade VPS (manual, 5 min)
-- [ ] Fazer upgrade no painel Contabo
-- [ ] Limpar Docker (`docker system prune -a`)
-- [ ] Verificar espaço disponível
+- [x] Fazer upgrade no painel Contabo
+- [x] Limpar Docker (`docker system prune -a`)
+- [x] Verificar espaço disponível
 
-### Passo 2: Multi-tenant no banco (Claude Code, ~2h)
-- [ ] Criar migration 008_multi_tenant.sql
-- [ ] Criar services/tenant.js
-- [ ] Alterar services/auth.js (tenant_id no JWT)
-- [ ] Alterar TODAS as routes para filtrar por tenant_id
-- [ ] Alterar hooks.js (stream key com tenant slug)
-- [ ] Testar: login → token tem tenant_id → queries filtradas
-- [ ] Dados existentes migrados automaticamente para tenant 'happydo'
+### Passo 2: Multi-tenant no banco (Claude Code)
+- [x] Criar migration 008_multi_tenant.sql
+- [x] Criar services/tenant.js
+- [x] Alterar services/auth.js (tenant_id no JWT)
+- [x] Alterar TODAS as routes para filtrar por tenant_id
+- [x] Alterar hooks.js (stream key com tenant slug)
+- [x] Testar: login → token tem tenant_id → queries filtradas
+- [x] Dados existentes migrados automaticamente para tenant 'happydo'
+- [x] Fix: PDVs sync UPDATE agora filtra por tenant_id (bug de segurança corrigido)
 
-### Passo 3: Object Storage (Claude Code, ~3h)
-- [ ] Provisionar Contabo S3 (manual no painel)
-- [ ] Instalar @aws-sdk/client-s3
-- [ ] Criar migration 007_s3_storage.sql
-- [ ] Criar services/storage.js
-- [ ] Alterar services/recorder.js (upload após gravação)
-- [ ] Alterar routes/recordings.js (pre-signed URL para playback)
-- [ ] Alterar services/cleanup.js (deletar do S3)
-- [ ] Adicionar env vars no .env e docker-compose.yml
-- [ ] Testar: gravação → upload S3 → playback via pre-signed URL
+### Passo 3: Object Storage (Claude Code)
+- [x] Provisionar Contabo S3 (manual no painel)
+- [x] Instalar @aws-sdk/client-s3
+- [x] Criar migration 007_s3_storage.sql
+- [x] Criar services/storage.js
+- [x] Alterar services/recorder.js (upload após gravação)
+- [x] Alterar routes/recordings.js (pre-signed URL para playback)
+- [x] Alterar services/cleanup.js (deletar do S3)
+- [x] Adicionar env vars no .env e docker-compose.yml
+- [x] Credenciais S3 configuradas no .env
+- [x] Testar: gravação → upload S3 → playback via pre-signed URL
+- [x] Dashboard card de monitoramento S3
+- [x] Migração batch de gravações locais → S3
+- [x] Face detection compatível com gravações S3
 
 ### Passo 4: Verificação
-- [ ] Dashboard funciona normalmente (tenant transparente)
-- [ ] Gravações novas vão pro S3
-- [ ] Gravações antigas continuam acessíveis (disco local)
-- [ ] Playback funciona (S3 e local)
-- [ ] Cleanup deleta do S3 e do local
-- [ ] Disco do VPS liberado significativamente
+- [x] Dashboard funciona normalmente (tenant transparente)
+- [x] Gravações novas vão pro S3
+- [x] Gravações antigas continuam acessíveis (disco local)
+- [x] Playback funciona (S3 e local)
+- [x] Cleanup deleta do S3 e do local (código pronto)
+- [x] Disco do VPS liberado significativamente
+
+### Extras implementados (fora do plano original)
+- [x] Fix: porcentagens Docker no painel de disco (antes mostrava "—%")
+- [x] Fix: contagem de arquivos de gravação consistente com tamanho exibido
+- [x] Subdomínios configurados (guard, api-guard, rtmp-guard, hls-guard)
+- [x] Guia de setup S3 Contabo (docs/SETUP_S3_CONTABO.md)
+- [x] Guia de migração VPS (docs/MIGRACAO_NOVO_SERVIDOR.md)
+
+### Pendências futuras (não bloqueiam a Fase 2.5)
+- [ ] UI de gestão de tenants (CRUD no dashboard — necessário quando houver 2+ clientes)
+- [ ] CRUD de API Keys (tabela existe, endpoints não)
+- [ ] Endpoints de snapshot e download de clipes (cameras.js — retornam 501)
+- [ ] Migração Contabo S3 → Backblaze B2 + Cloudflare CDN (quando escalar playback)
 
 ---
 

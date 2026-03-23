@@ -45,8 +45,8 @@ router.post('/sync', authenticate, async (req, res) => {
 
     for (const store of stores) {
       const { rows } = await pool.query(
-        'SELECT id FROM pdvs WHERE pulse_id = $1',
-        [store.id]
+        'SELECT id FROM pdvs WHERE pulse_id = $1 AND tenant_id = $2',
+        [store.id, tenantId]
       );
 
       if (rows.length === 0) {
@@ -79,7 +79,7 @@ router.post('/sync', authenticate, async (req, res) => {
              city = $6, state = $7, cep = $8, bandeira = $9,
              latitude = $10, longitude = $11, is_active = $12,
              pulse_synced_at = now(), updated_at = now()
-           WHERE pulse_id = $1`,
+           WHERE pulse_id = $1 AND tenant_id = $13`,
           [
             store.id,
             store.code,
@@ -93,6 +93,7 @@ router.post('/sync', authenticate, async (req, res) => {
             store.latitude ? parseFloat(store.latitude) : null,
             store.longitude ? parseFloat(store.longitude) : null,
             store.active,
+            tenantId,
           ]
         );
         updated++;
