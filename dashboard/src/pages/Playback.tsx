@@ -259,7 +259,10 @@ function VideoPlayer({
     const h = Math.floor(currentPlaySec / 3600) % 24;
     const m = Math.floor((currentPlaySec % 3600) / 60);
     const s = currentPlaySec % 60;
-    const ts = `${dateStr}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    // Preserve timezone offset from original recording to avoid UTC mismatch
+    const tzMatch = recording.started_at.match(/([+-]\d{2}(?::\d{2})?)$/);
+    const tzSuffix = tzMatch ? tzMatch[1] : '';
+    const ts = `${dateStr}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}${tzSuffix}`;
 
     const results: SimultaneousVideo[] = [];
     const toCheck = siblingCameras.slice(0, 4);
@@ -281,16 +284,21 @@ function VideoPlayer({
   }, [hasMultiCam, recording?.id, siblingCameras.length]);
 
   // Auto-load multi-cam videos when showMultiCam is active
+  const loadMultiCamRef = useRef(loadMultiCamVideos);
+  loadMultiCamRef.current = loadMultiCamVideos;
+  const multiCamFoundRef = useRef(false);
+  multiCamFoundRef.current = multiCamVideos.length > 0;
   useEffect(() => {
     if (!showMultiCam || !hasMultiCam) return;
+    multiCamFoundRef.current = false;
     // Load immediately
-    loadMultiCamVideos();
+    loadMultiCamRef.current();
     // Retry every 1s until videos are found
     const interval = setInterval(() => {
-      if (multiCamVideos.length === 0) loadMultiCamVideos();
+      if (!multiCamFoundRef.current) loadMultiCamRef.current();
     }, 1000);
     return () => clearInterval(interval);
-  }, [showMultiCam, recording.id]);
+  }, [showMultiCam, hasMultiCam, recording.id]);
 
   // Check face service health periodically (every 15s if not ok, stop once ok)
   useEffect(() => {
