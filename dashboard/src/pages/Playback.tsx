@@ -5,8 +5,14 @@ import { useAuth } from "../context/AuthContext";
 interface Camera {
   id: string;
   name: string;
+  pdv_id: string;
   pdv_name: string;
   recording_mode: string;
+}
+
+interface SimultaneousVideo {
+  camera: Camera;
+  recording: Recording;
 }
 
 interface Recording {
@@ -199,12 +205,15 @@ function Timeline({
 // ─── Video Player with Face Detection Overlay ───
 
 function VideoPlayer({
-  recording, recordings, onSelectRecording, token, apiFetch, onFaceClick, cameraName, pdvName,
+  recording, recordings, onSelectRecording, token, apiFetch, onFaceClick, onFaceDetected, cameraName, pdvName,
+  cameras, selectedCameraId,
 }: {
   recording: Recording; recordings: Recording[]; onSelectRecording: (r: Recording) => void; token: string;
   apiFetch: (url: string, init?: RequestInit) => Promise<Response>;
   onFaceClick: (embedding: number[]) => void;
+  onFaceDetected: (faces: DetectedFace[]) => void;
   cameraName: string; pdvName: string;
+  cameras: Camera[]; selectedCameraId: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -224,6 +233,51 @@ function VideoPlayer({
   const detectingRef = useRef(false);
 
   const [faceServiceOk, setFaceServiceOk] = useState<boolean | null>(null);
+
+  // Simultaneous multi-camera playback
+  const [showMultiCam, setShowMultiCam] = useState(false);
+  const [multiCamVideos, setMultiCamVideos] = useState<SimultaneousVideo[]>([]);
+  const [multiCamLoading, setMultiCamLoading] = useState(false);
+
+  const currentCamera = cameras.find((c) => c.id === selectedCameraId);
+  const siblingCameras = currentCamera
+    ? cameras.filter((c) => c.pdv_id === currentCamera.pdv_id && c.id !== currentCamera.id)
+    : [];
+  const hasMultiCam = siblingCameras.length > 0;
+
+  const loadMultiCamVideos = useCallback(async () => {
+    if (!hasMultiCam || !recording) return;
+    setMultiCamLoading(true);
+    setMultiCamVideos([]);
+    const recStartLocal = parseLocalTime(recording.started_at);
+    const recStartSec = recStartLocal.h * 3600 + recStartLocal.m * 60 + recStartLocal.s;
+    const currentPlaySec = recStartSec + Math.floor(videoRef.current?.currentTime || 0);
+    // Build ISO timestamp from the recording date + current play position
+    const dateMatch = recording.started_at.match(/(\d{4}-\d{2}-\d{2})/);
+    const dateStr = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);
+    const h = Math.floor(currentPlaySec / 3600) % 24;
+    const m = Math.floor((currentPlaySec % 3600) / 60);
+    const s = currentPlaySec % 60;
+    const ts = `${dateStr}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+
+    const results: SimultaneousVideo[] = [];
+    const toCheck = siblingCameras.slice(0, 4);
+    await Promise.all(
+      toCheck.map(async (cam) => {
+        try {
+          const res = await apiFetch(`/api/cameras/${cam.id}/recording?timestamp=${encodeURIComponent(ts)}&duration=30`);
+          if (res.ok) {
+            const rec = await res.json();
+            if (rec && !rec.error) {
+              results.push({ camera: cam, recording: rec });
+            }
+          }
+        } catch { /* skip */ }
+      })
+    );
+    setMultiCamVideos(results);
+    setMultiCamLoading(false);
+  }, [hasMultiCam, recording?.id, siblingCameras.length]);
 
   // Check face service health periodically (every 15s if not ok, stop once ok)
   useEffect(() => {
@@ -278,7 +332,9 @@ function VideoPlayer({
       });
       if (res.ok) {
         const data = await res.json();
-        setDetectedFaces(data.faces || []);
+        const faces = data.faces || [];
+        setDetectedFaces(faces);
+        if (faces.length > 0) onFaceDetected(faces);
       } else {
         const err = await res.json().catch(() => ({ error: `Erro ${res.status}` }));
         setFaceError(err.error || `Erro ${res.status}`);
@@ -439,6 +495,7 @@ function VideoPlayer({
   const cb: React.CSSProperties = { background: "none", border: "none", color: "#fff", cursor: "pointer", padding: "0.25rem 0.35rem", fontSize: "0.95rem", lineHeight: 1, opacity: 0.85 };
 
   return (
+    <>
     <div ref={containerRef} style={{
       background: "#000", borderRadius: isFullscreen ? 0 : "6px", overflow: "hidden", border: isFullscreen ? "none" : "1px solid #333",
       ...(isFullscreen ? { display: "flex", flexDirection: "column" as const, height: "100vh" } : {}),
@@ -570,6 +627,29 @@ function VideoPlayer({
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
           </a>
+          {/* Multi-camera simultaneous playback */}
+          <button
+            onClick={() => {
+              if (!hasMultiCam) return;
+              const next = !showMultiCam;
+              setShowMultiCam(next);
+              if (next) loadMultiCamVideos();
+            }}
+            style={{
+              ...cb,
+              background: showMultiCam ? "rgba(33,150,243,0.3)" : "none",
+              borderRadius: "3px",
+              padding: "0.2rem 0.35rem",
+              opacity: hasMultiCam ? 0.85 : 0.3,
+              cursor: hasMultiCam ? "pointer" : "not-allowed",
+            }}
+            title={hasMultiCam ? `Playback simultâneo (${siblingCameras.length} câmera(s) no PDV)` : "Sem outras câmeras neste PDV"}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="3" width="8" height="7" rx="1"/><rect x="14" y="3" width="8" height="7" rx="1"/>
+              <rect x="2" y="14" width="8" height="7" rx="1"/><rect x="14" y="14" width="8" height="7" rx="1"/>
+            </svg>
+          </button>
           <button onClick={() => { setMuted(!muted); if (videoRef.current) videoRef.current.muted = !muted; }} style={cb}>
             {muted
               ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -587,13 +667,65 @@ function VideoPlayer({
         </div>
       </div>
     </div>
+
+    {/* Multi-camera simultaneous playback panel */}
+    {showMultiCam && (
+      <div style={{ background: "#fff", borderRadius: "6px", border: "1px solid #2196f3", padding: "0.5rem", marginTop: "0.5rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.4rem" }}>
+          <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "#1565c0", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1565c0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="3" width="8" height="7" rx="1"/><rect x="14" y="3" width="8" height="7" rx="1"/>
+              <rect x="2" y="14" width="8" height="7" rx="1"/><rect x="14" y="14" width="8" height="7" rx="1"/>
+            </svg>
+            Playback Simultâneo — {currentCamera?.pdv_name}
+          </div>
+          <div style={{ display: "flex", gap: "0.3rem" }}>
+            <button onClick={loadMultiCamVideos}
+              style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.1rem 0.4rem",
+                cursor: "pointer", fontSize: "0.65rem", color: "#666" }}>
+              Atualizar
+            </button>
+            <button onClick={() => setShowMultiCam(false)}
+              style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.1rem 0.4rem",
+                cursor: "pointer", fontSize: "0.65rem", color: "#666" }}>
+              Fechar
+            </button>
+          </div>
+        </div>
+        {multiCamLoading ? (
+          <div style={{ textAlign: "center", padding: "1rem", color: "#999", fontSize: "0.75rem" }}>Buscando vídeos simultâneos...</div>
+        ) : multiCamVideos.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "1rem", color: "#999", fontSize: "0.75rem" }}>
+            Nenhum vídeo simultâneo encontrado nas outras câmeras deste PDV.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: multiCamVideos.length === 1 ? "1fr" : "1fr 1fr", gap: "0.4rem" }}>
+            {multiCamVideos.map((mv) => (
+              <div key={mv.camera.id} style={{ background: "#000", borderRadius: "4px", overflow: "hidden" }}>
+                <div style={{ padding: "0.15rem 0.4rem", background: "rgba(33,150,243,0.9)", color: "#fff",
+                  fontSize: "0.6rem", fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                  <span>{mv.camera.name}</span>
+                  <span>{formatTime(mv.recording.started_at)} — {formatTime(mv.recording.ended_at || mv.recording.started_at)}</span>
+                </div>
+                <video
+                  src={`/api/recordings/${mv.recording.id}/stream?token=${encodeURIComponent(token)}`}
+                  style={{ width: "100%", display: "block", maxHeight: "30vh" }}
+                  controls muted playsInline
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )}
+    </>
   );
 }
 
 // ─── Recording List ───
 
-function RecordingList({ recordings, selectedRecording, onSelect, token }: {
-  recordings: Recording[]; selectedRecording: Recording | null; onSelect: (r: Recording) => void; token: string;
+function RecordingList({ recordings, selectedRecording, onSelect }: {
+  recordings: Recording[]; selectedRecording: Recording | null; onSelect: (r: Recording) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -626,17 +758,6 @@ function RecordingList({ recordings, selectedRecording, onSelect, token }: {
                 {r.file_size ? <span>{formatBytes(r.file_size)}</span> : null}
               </div>
             </div>
-            <a href={`/api/recordings/${r.id}/thumbnail?token=${encodeURIComponent(token)}`}
-              onClick={(e) => e.stopPropagation()}
-              download={`thumb-${r.id}.jpg`}
-              title="Baixar imagem"
-              style={{ flexShrink: 0, padding: "0.2rem 0.35rem", borderRadius: "3px", background: "#f5f5f5",
-                border: "1px solid #ddd", cursor: "pointer", fontSize: "0.75rem", color: "#555", textDecoration: "none",
-                display: "flex", alignItems: "center" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
-              </svg>
-            </a>
           </div>
         );
       })}
@@ -658,9 +779,21 @@ function Playback() {
   const [searchTimestamp, setSearchTimestamp] = useState("");
   const deepLinkHandled = useRef(false);
 
-  // Face search state
+  // Face search state (manual click)
   const [faceSearchResults, setFaceSearchResults] = useState<FaceAppearance[] | null>(null);
   const [faceSearching, setFaceSearching] = useState(false);
+
+  // Auto cross-reference state (accumulated during playback)
+  const [autoCrossRef, setAutoCrossRef] = useState<FaceAppearance[]>([]);
+  const [autoCrossRefOn, setAutoCrossRefOn] = useState(false);
+  const autoCrossRefSearching = useRef(false);
+  const searchedEmbeddings = useRef<Set<string>>(new Set());
+
+  // Reset auto cross-ref when recording changes
+  useEffect(() => {
+    setAutoCrossRef([]);
+    searchedEmbeddings.current.clear();
+  }, [selectedRecording?.id]);
 
   const handleFaceClick = async (embedding: number[]) => {
     setFaceSearching(true);
@@ -678,6 +811,41 @@ function Playback() {
     } catch { /* ignore */ }
     setFaceSearching(false);
   };
+
+  // Auto cross-reference: when faces are detected, search for each unique face
+  const handleFaceDetected = useCallback(async (faces: DetectedFace[]) => {
+    if (!autoCrossRefOn || autoCrossRefSearching.current) return;
+    // Use first few floats of embedding as a fingerprint to avoid re-searching same face
+    for (const face of faces) {
+      if (!face.embedding || face.embedding.length < 10) continue;
+      const fingerprint = face.embedding.slice(0, 8).map((v) => v.toFixed(2)).join(",");
+      if (searchedEmbeddings.current.has(fingerprint)) continue;
+      searchedEmbeddings.current.add(fingerprint);
+
+      autoCrossRefSearching.current = true;
+      try {
+        const res = await apiFetch("/api/recordings/search-by-embedding", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ embedding: face.embedding, limit: 20, min_similarity: 0.6 }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const appearances: FaceAppearance[] = data.appearances || [];
+          if (appearances.length > 0) {
+            setAutoCrossRef((prev) => {
+              const existing = new Set(prev.map((a) => `${a.camera_id}-${a.first_seen || a.detected_at}`));
+              const newItems = appearances.filter(
+                (a) => !existing.has(`${a.camera_id}-${a.first_seen || a.detected_at}`)
+              );
+              return newItems.length > 0 ? [...prev, ...newItems] : prev;
+            });
+          }
+        }
+      } catch { /* ignore */ }
+      autoCrossRefSearching.current = false;
+    }
+  }, [autoCrossRefOn, apiFetch]);
 
   useEffect(() => {
     apiFetch("/api/cameras").then((r) => r.json()).then((cams: Camera[]) => {
@@ -802,12 +970,13 @@ function Playback() {
       {loading ? (
         <div style={{ textAlign: "center", padding: "2rem", color: "#999", fontSize: "0.85rem" }}>Carregando...</div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: recordings.length > 0 ? "1fr 280px" : "1fr", gap: "0.75rem", alignItems: "start" }}>
+        <div style={{ display: "grid", gridTemplateColumns: recordings.length > 0 ? "1fr 220px" : "1fr", gap: "0.75rem", alignItems: "start" }}>
           <div>
             {selectedRecording && token ? (
               <VideoPlayer recording={selectedRecording} recordings={recordings} onSelectRecording={setSelectedRecording}
-                token={token} apiFetch={apiFetch} onFaceClick={handleFaceClick}
-                cameraName={selectedCamera?.name || ""} pdvName={selectedCamera?.pdv_name || ""} />
+                token={token} apiFetch={apiFetch} onFaceClick={handleFaceClick} onFaceDetected={handleFaceDetected}
+                cameraName={selectedCamera?.name || ""} pdvName={selectedCamera?.pdv_name || ""}
+                cameras={cameras} selectedCameraId={selectedCameraId} />
             ) : (
               <div style={{ background: "#000", borderRadius: "6px", aspectRatio: "16/9", display: "flex", alignItems: "center", justifyContent: "center",
                 color: "#666", fontSize: "0.85rem", maxHeight: "75vh" }}>
@@ -902,6 +1071,115 @@ function Playback() {
                 )}
               </div>
             )}
+
+            {/* Auto cross-reference panel */}
+            {selectedRecording && (
+              <div style={{ background: "#fff", borderRadius: "6px", border: autoCrossRefOn ? "1px solid #7b1fa2" : "1px solid #ddd", padding: "0.5rem 0.75rem", marginTop: "0.5rem" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: "0.8rem", fontWeight: 600, color: autoCrossRefOn ? "#7b1fa2" : "#666", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={autoCrossRefOn ? "#7b1fa2" : "#999"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
+                    </svg>
+                    Busca Cruzada
+                    {autoCrossRefOn && autoCrossRef.length > 0 && (
+                      <span style={{ fontSize: "0.6rem", background: "#f3e5f5", color: "#7b1fa2", padding: "0.05rem 0.35rem", borderRadius: "3px", fontWeight: 600 }}>
+                        {autoCrossRef.length}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: "0.3rem", alignItems: "center" }}>
+                    {autoCrossRefOn && autoCrossRef.length > 0 && (
+                      <button
+                        onClick={() => { setAutoCrossRef([]); searchedEmbeddings.current.clear(); }}
+                        style={{ background: "none", border: "1px solid #ccc", borderRadius: "4px", padding: "0.1rem 0.4rem",
+                          cursor: "pointer", fontSize: "0.65rem", color: "#666" }}>
+                        Limpar
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setAutoCrossRefOn(!autoCrossRefOn)}
+                      style={{
+                        padding: "0.15rem 0.5rem", borderRadius: "4px", cursor: "pointer", fontSize: "0.7rem", fontWeight: 600,
+                        background: autoCrossRefOn ? "#7b1fa2" : "#f5f5f5",
+                        color: autoCrossRefOn ? "#fff" : "#666",
+                        border: autoCrossRefOn ? "1px solid #7b1fa2" : "1px solid #ccc",
+                      }}>
+                      {autoCrossRefOn ? "ON" : "OFF"}
+                    </button>
+                  </div>
+                </div>
+
+                {autoCrossRefOn && autoCrossRef.length > 0 && (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "0.4rem", maxHeight: "250px", overflowY: "auto", marginTop: "0.4rem" }}>
+                    {autoCrossRef.map((a, i) => (
+                      <div key={`${a.id}-${i}`} style={{ display: "flex", gap: "0.4rem", alignItems: "center", padding: "0.35rem",
+                        background: "#faf5ff", borderRadius: "4px", border: "1px solid #e8daef" }}>
+                        {a.face_image && token && (
+                          <img
+                            src={`${a.face_image}&token=${encodeURIComponent(token)}`}
+                            alt="Face"
+                            style={{ width: 44, height: 44, objectFit: "cover", borderRadius: "4px", flexShrink: 0 }}
+                          />
+                        )}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: "0.75rem", color: "#7b1fa2", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+                            {(a.similarity * 100).toFixed(0)}% match
+                            {a.detections > 1 && (
+                              <span style={{ fontSize: "0.6rem", background: "#e3f2fd", color: "#1565c0", padding: "0.05rem 0.3rem", borderRadius: "3px", fontWeight: 600 }}>
+                                {a.detections}x
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: "0.65rem", color: "#666" }}>{a.pdv_name} — {a.camera_name}</div>
+                          <div style={{ fontSize: "0.65rem", color: "#999" }}>
+                            {new Date(a.first_seen || a.detected_at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                            {a.first_seen && a.last_seen && a.first_seen !== a.last_seen && (
+                              <> → {new Date(a.last_seen).toLocaleString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</>
+                            )}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem", flexShrink: 0 }}>
+                          <button
+                            onClick={() => jumpToMoment(a.camera_id, a.first_seen || a.detected_at)}
+                            style={{ padding: "0.15rem 0.35rem", borderRadius: "3px", border: "1px solid #1a1a2e",
+                              background: "#1a1a2e", color: "#fff", cursor: "pointer", fontSize: "0.6rem", fontWeight: 600 }}
+                            title="Ver este momento"
+                          >
+                            &#9654;
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const entryName = prompt("Nome para a lista de suspeitos:", "Suspeito");
+                              if (!entryName) return;
+                              try {
+                                const r = await apiFetch("/api/faces/watchlist/from-appearance", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ face_embedding_id: a.id, name: entryName }),
+                                });
+                                if (r.ok) { alert("Adicionado à lista de suspeitos!"); }
+                                else { const e = await r.json(); alert(e.error || "Erro ao adicionar"); }
+                              } catch { alert("Erro ao adicionar à lista de suspeitos"); }
+                            }}
+                            style={{ padding: "0.15rem 0.35rem", borderRadius: "3px", border: "1px solid #c62828",
+                              background: "#c62828", color: "#fff", cursor: "pointer", fontSize: "0.55rem", fontWeight: 600 }}
+                            title="Adicionar à lista de suspeitos"
+                          >
+                            &#9888;
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {autoCrossRefOn && autoCrossRef.length === 0 && (
+                  <div style={{ fontSize: "0.7rem", color: "#999", marginTop: "0.3rem" }}>
+                    Ative a detecção facial e reproduza o vídeo. Cruzamentos aparecerão aqui automaticamente.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {recordings.length > 0 && (
@@ -909,7 +1187,7 @@ function Playback() {
               <div style={{ fontSize: "0.7rem", fontWeight: 600, color: "#333", padding: "0.2rem 0.4rem 0.35rem", borderBottom: "1px solid #eee", marginBottom: "0.35rem" }}>
                 {formatDate(displayDate)} — {selectedCamera?.name}
               </div>
-              <RecordingList recordings={recordings} selectedRecording={selectedRecording} onSelect={setSelectedRecording} token={token || ""} />
+              <RecordingList recordings={recordings} selectedRecording={selectedRecording} onSelect={setSelectedRecording} />
             </div>
           )}
         </div>
