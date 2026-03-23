@@ -226,7 +226,7 @@ export async function checkWatchlist(cameraId, faceEmbeddingIds) {
  * Returns appearances sorted by similarity desc.
  */
 export async function searchFace(embedding, options = {}) {
-  const { limit = 50, minSimilarity = 0.6, cameraIds, from, to } = options;
+  const { limit = 50, minSimilarity = 0.45, cameraIds, from, to } = options;
   const embeddingStr = `[${embedding.join(',')}]`;
 
   let query = `

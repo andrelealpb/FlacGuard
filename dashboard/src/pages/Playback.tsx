@@ -842,7 +842,7 @@ function Playback() {
       const res = await apiFetch("/api/recordings/search-by-embedding", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ embedding, limit: 30, min_similarity: 0.6 }),
+        body: JSON.stringify({ embedding, limit: 50, min_similarity: 0.45 }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -867,7 +867,7 @@ function Playback() {
         const res = await apiFetch("/api/recordings/search-by-embedding", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ embedding: face.embedding, limit: 20, min_similarity: 0.6 }),
+          body: JSON.stringify({ embedding: face.embedding, limit: 50, min_similarity: 0.45 }),
         });
         if (res.ok) {
           const data = await res.json();
