@@ -13,6 +13,7 @@ interface Camera {
 interface SimultaneousVideo {
   camera: Camera;
   recording: Recording;
+  seekOffset: number; // seconds into the recording to seek for sync
 }
 
 interface Recording {
@@ -273,7 +274,12 @@ function VideoPlayer({
           if (res.ok) {
             const rec = await res.json();
             if (rec && !rec.error) {
-              results.push({ camera: cam, recording: rec });
+              // Calculate seek offset: how many seconds into the sibling recording
+              // corresponds to the main player's current timestamp
+              const sibStart = parseLocalTime(rec.started_at);
+              const sibStartSec = sibStart.h * 3600 + sibStart.m * 60 + sibStart.s;
+              const seekOffset = Math.max(0, currentPlaySec - sibStartSec);
+              results.push({ camera: cam, recording: rec, seekOffset });
             }
           }
         } catch { /* skip */ }
@@ -731,6 +737,12 @@ function VideoPlayer({
           src={`/api/recordings/${mv.recording.id}/stream?token=${encodeURIComponent(token)}`}
           style={{ width: "100%", display: "block", pointerEvents: "none" }}
           autoPlay muted playsInline
+          onLoadedMetadata={(e) => {
+            const vid = e.currentTarget;
+            if (mv.seekOffset > 0 && mv.seekOffset < vid.duration) {
+              vid.currentTime = mv.seekOffset;
+            }
+          }}
         />
       </div>
     ))}
@@ -874,18 +886,12 @@ function Playback() {
           const appearances: FaceAppearance[] = data.appearances || [];
           if (appearances.length > 0) {
             setAutoCrossRef((prev) => {
-              // Deduplicate by camera + day (same camera on same day = same video/visit context)
-              const existingKeys = new Set(prev.map((a) => {
-                const day = (a.first_seen || a.detected_at).slice(0, 10);
-                return `${a.camera_id}-${day}`;
-              }));
-              const newItems = appearances.filter((a) => {
-                const day = (a.first_seen || a.detected_at).slice(0, 10);
-                const key = `${a.camera_id}-${day}`;
-                if (existingKeys.has(key)) return false;
-                existingKeys.add(key);
-                return true;
-              });
+              // Deduplicate by camera + 5-min window (same camera within 5 min = same visit)
+              const TIME_GAP_MS = 5 * 60 * 1000;
+              const getTs = (a: FaceAppearance) => new Date(a.first_seen || a.detected_at).getTime();
+              const isNearExisting = (a: FaceAppearance) =>
+                prev.some((e) => e.camera_id === a.camera_id && Math.abs(getTs(e) - getTs(a)) < TIME_GAP_MS);
+              const newItems = appearances.filter((a) => !isNearExisting(a));
               return newItems.length > 0 ? [...prev, ...newItems] : prev;
             });
           }
