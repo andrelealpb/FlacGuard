@@ -285,10 +285,10 @@ function VideoPlayer({
     if (!showMultiCam || !hasMultiCam) return;
     // Load immediately
     loadMultiCamVideos();
-    // Then poll every 10 seconds to keep in sync with current playback position
+    // Retry every 1s until videos are found
     const interval = setInterval(() => {
       if (multiCamVideos.length === 0) loadMultiCamVideos();
-    }, 10000);
+    }, 1000);
     return () => clearInterval(interval);
   }, [showMultiCam, recording.id]);
 
