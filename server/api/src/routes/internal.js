@@ -25,6 +25,18 @@ function authenticateInternal(req, res, next) {
 router.use(authenticateInternal);
 
 // ---------------------------------------------------------------------------
+// GET /api/internal/health — Quick check that the node API is reachable
+// ---------------------------------------------------------------------------
+router.get('/health', async (_req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok', service: 'flac-guard-node' });
+  } catch (err) {
+    res.status(503).json({ status: 'error', message: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/internal/tenants — Create a new tenant (called by control VPS)
 // ---------------------------------------------------------------------------
 router.post('/tenants', async (req, res) => {
