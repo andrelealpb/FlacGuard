@@ -1,403 +1,565 @@
 # Flac Guard — Arquitetura do Sistema
 
-> Versão 3.0 | Março 2026 | **Fase 1 Concluída**
+> Versão 5.0 | Março 2026
+> Repositório: `github.com/andrelealpb/FlacGuard`
+> Domínio: flactech.com.br
+> Infra: Cloud VPS 20 NVMe (US-Central) + Contabo S3 (US-Central)
+> Status: Produção (5 câmeras, multi-tenant, S3 ativo)
 
 ---
 
 ## 1. Visão Geral
 
-A Happydo Mercadinhos opera 60-80 mercadinhos autônomos de autoatendimento em João Pessoa/PB. Cada PDV possui 1-2 câmeras MIBO Intelbras (~80 total) e um dispositivo Android.
+O Flac Guard é um sistema SaaS de vídeo monitoramento com reconhecimento facial para mercadinhos autônomos. Recebe streams RTMP de câmeras Intelbras MIBO, grava por detecção de movimento ou continuamente, faz reconhecimento facial com InsightFace + YOLO26n, armazena gravações no Contabo S3, e oferece dashboard React com autenticação JWT multi-tenant.
 
-O **Flac Guard** combina **câmeras MIBO** (teto, visão geral) + **app Flac Guard Cam** (frontal, rostos) nos dispositivos Android já existentes, alimentando um servidor cloud com gravação por movimento, reconhecimento facial, busca cruzada por timestamp e alertas via webhook.
+A arquitetura é **RTMP-first** (câmeras fazem push outbound) e **multi-tenant** (múltiplos clientes isolados no mesmo servidor).
 
-**Armazenamento unificado:** para o servidor, MIBO e Guard Cam são idênticos — mesmo pipeline, mesma gravação, mesmos endpoints.
+### Números atuais (produção)
 
-### Objetivos
+| Métrica | Valor |
+|---------|-------|
+| Câmeras online | 5/5 |
+| PDVs monitorados | 3 |
+| Face embeddings | ~22.700+ |
+| Gravações S3 | ~19 GB |
+| Consumo médio/câmera | 0.53 GB/dia |
+| Uptime servidor | 6+ dias contínuos |
 
-- Live centralizado (MIBO + Guard Cam)
-- Gravação por movimento (~80-90% economia)
-- Reconhecimento facial (suspeitos, repositores, watchlist)
-- Busca cruzada por timestamp (mosaico sincronizado)
-- Contagem de visitantes distintos/dia
-- Zero hardware extra — dispositivos Android existentes
-- 100% cloud (desenvolvimento + infraestrutura)
+### Stack
 
-### Decisões
-
-| Decisão | Escolha | Motivo |
-|---------|---------|--------|
-| Protocolo | RTMP push | Sem acesso ao roteador |
-| NVR | Nginx-RTMP + Custom | Controle total |
-| Gravação | Por movimento | ~80-90% economia |
-| Face recognition | InsightFace (Fase 2) | Qualidade + open source |
-| Retenção | Por câmera | Watchlist permanente |
-| Webhooks | Genéricos | Qualquer destino HTTP |
-| Guard Cam | **Kotlin nativo** | Ultra-leve (~30MB), build via CI/CD |
-| CI/CD Android | **GitHub Actions** | Sem Android Studio local |
-
----
-
-## 2. Inventário
-
-### Câmeras MIBO
-
-| Modelo | Qtd | RTMP | Estratégia |
-|--------|-----|------|------------|
-| iM3 C | ~20 | ✅ | RTMP direto |
-| iM5 SC | ~25 | ✅ (validado) | RTMP direto |
-| iMX | ~12 | ✅ | RTMP direto |
-| IC3 | ~13 | ❌ | Pi Zero (RTSP→RTMP) |
-| IC5 | ~10 | ❌ | Pi Zero (RTSP→RTMP) |
-
-### Dispositivos Android
-
-| Dispositivo | Câmera | USB | RAM | Android |
-|------------|--------|-----|-----|---------|
-| PIPO X9R | ❌ | ✅ 4x USB | 2GB | 4.4-5.1 |
-| Sunmi D2 Mini | ⚠️ Versão scan | ✅ | 2GB | 8.1 |
-| Lenovo Tab 10.1" | ✅ Frontal | ✅ OTG | 4GB | 14 |
-
-**Nota sobre PIPO:** problemas de energia USB (reinicia com 2 dispositivos conectados). Webcam USB inviável nesses ~60 PDVs. Solução: câmera MIBO extra (iM3 C ~R$ 220 ou iMX ~R$ 180) posicionada na altura do rosto.
+| Componente | Tecnologia | Linhas de código |
+|-----------|-----------|:----------------:|
+| Servidor RTMP | Nginx-RTMP (Docker) | — |
+| API Backend | Node.js 20 + Express 4 (ESM) | ~5.100 |
+| Face Service | Python 3.11 + InsightFace + YOLO26n (FastAPI) | ~290 |
+| Dashboard | React 18 + TypeScript + Vite + HLS.js | ~5.100 |
+| Banco de Dados | PostgreSQL 16 + pgvector | ~275 (migrations) |
+| Object Storage | Contabo S3 (AWS SDK compatible) | — |
+| CI/CD | GitHub webhook → deploy.sh | — |
+| **Total** | **89 arquivos** | **~11.000+** |
 
 ---
 
-## 3. Arquitetura
+## 2. Infraestrutura
 
-```
-POR PDV:
-  [Câmera MIBO] ──RTMP──→ Servidor    (teto)
-  [Guard Cam]   ──RTMP──→ Servidor    (frontal)
-  → Pipeline 100% idêntico
+### Docker Compose (5 containers)
 
-SERVIDOR CLOUD:
-  Nginx-RTMP → HLS Live → Dashboard/API
-       │
-  Pipeline Unificado (cada 2-3s):
-  ├── 1. Movimento → gravar?
-  ├── 2. Rostos → embedding 512D → pgvector
-  └── 3. Watchlist → match >85% → webhook
-       │                    │
-  FFmpeg Recorder      PostgreSQL + pgvector
-  (MP4 só movimento)   (embeddings, metadados)
-       │
-  API REST ←→ Dashboard React
-  ├── Busca cruzada por timestamp
-  └── Webhooks → qualquer destino
+```yaml
+services:
+  nginx-rtmp      # Porta 1935 (RTMP) + 8080 (HLS/stats)
+  api             # Porta 8000 (Node.js + Express + FFmpeg)
+  face-service    # Porta 8001 (Python + InsightFace + YOLO, limite 2GB RAM)
+  dashboard       # Porta 3000 (React SPA via Nginx Alpine)
+  db              # PostgreSQL 16 + pgvector, porta 5432
 ```
 
-### Retenção
+### VPS
 
-| Tipo | Retenção |
-|------|----------|
-| Gravações + embeddings | Configurável por câmera (padrão 7-14 dias) |
-| **Embeddings watchlist** | **Permanentes** |
-| Audit log | 90 dias |
+- **Plano:** Cloud VPS 20 NVMe (Contabo, US-Central)
+- **IP:** 147.93.141.133
+- **Specs:** 6 cores, 12GB RAM, 100GB NVMe
+- **Custo:** $10.75/mês
+- **OS:** Ubuntu 24.04
+
+### Object Storage
+
+- **Provedor:** Contabo S3 (US-Central, mesma região do VPS)
+- **Bucket:** FlacGuard-S3
+- **Capacidade:** 250GB base, auto-scaling disponível
+- **Uso atual:** 19.42 GB (7.76%)
+- **Custo:** €2.49/mês
+- **Prefixos:** `recordings/{tenant}/{camera}/`, `faces/{tenant}/{camera}/`, `watchlist/{tenant}/`
+
+### DNS (flactech.com.br)
+
+| Subdomínio | IP | Função |
+|-----------|-----|--------|
+| guard.flactech.com.br | 147.93.141.133 | Dashboard cliente |
+| api-guard.flactech.com.br | 147.93.141.133 | API REST |
+| rtmp-guard.flactech.com.br | 147.93.141.133 | RTMP ingest (câmeras) |
+| hls-guard.flactech.com.br | 147.93.141.133 | HLS playback |
+| ssh-guard.flactech.com.br | 147.93.141.133 | SSH |
+| deploy-guard.flactech.com.br | 147.93.141.133 | Deploy webhook |
+
+### Volumes Docker
+
+| Volume | Conteúdo |
+|--------|----------|
+| `flac-guard_pgdata` | PostgreSQL (banco + pgvector) |
+| `flac-guard_hls_data` | Segmentos HLS (live, temporários) |
+| `flac-guard_recordings` | Buffer local de gravações (antes de upload S3) |
 
 ---
 
-## 4. Flac Guard Cam (App Android)
+## 3. Multi-tenant
 
-### 4.1 Visão Geral
+### Implementação (Migration 008)
 
-App Android nativo Kotlin, ultra-leve, desenvolvido como parte do projeto. Captura vídeo da câmera integrada ou webcam USB → RTMP push → servidor. **Zero processamento de IA local.**
-
-### 4.2 Stack
-
-| Componente | Tecnologia |
-|-----------|-----------|
-| Linguagem | **Kotlin nativo** |
-| Câmera integrada | CameraX (Jetpack) |
-| Webcam USB | UVCCamera (libusb/UVC) |
-| Encoder | MediaCodec (H.264 hardware) |
-| RTMP | rtmp-rtsp-stream-client-java |
-| Background | Foreground Service + WakeLock |
-| Config | QR Code + API pull |
-| Build | **GitHub Actions (CI/CD cloud)** |
-
-### 4.3 Funcionalidades
-
-- Detecção automática: câmera integrada → webcam USB (fallback)
-- RTMP push: 720p, 10-15fps, H.264 hardware
-- Auto-start on boot + auto-reconnect + watchdog
-- Config via QR code ou tela de setup única
-- LED discreto (verde/vermelho)
-- Background service — tela livre para outros apps
-- Heartbeat 60s + config remota via API
-
-### 4.4 Performance
-
-| Métrica | Alvo |
-|---------|------|
-| RAM | < 30 MB |
-| CPU | < 2% |
-| Android mínimo | 5.0 (API 21) |
-| Boot → streaming | < 15s |
-
-### 4.5 Pipeline de Build (CI/CD)
+Tabela `tenants` com isolamento lógico. Cada tabela principal tem `tenant_id`. Todas as queries filtram por tenant via `services/tenant.js`.
 
 ```
-1. Escrever código Kotlin (Claude Code SSH)
-2. Push → branch guard-cam/* no GitHub
-3. GitHub Actions:
-   ├── JDK 17 + Android SDK + Gradle cache
-   ├── ./gradlew assembleRelease
-   ├── Assinar APK
-   └── Upload artifact / GitHub Release
-4. Distribuir APK nos dispositivos
+tenants: { id, name, slug, plan, max_cameras, max_storage_gb, is_active, settings }
 ```
 
-### 4.6 Distribuição
+Tabelas com tenant_id direto: `pdvs`, `cameras`, `users`, `api_keys`, `webhooks`, `face_watchlist`.
 
-| Método | Detalhe |
-|--------|---------|
-| ADB via rede | `adb connect IP:5555` + `adb install` |
-| Download HTTP | `guard.flac.com.br/apk/latest` |
-| Pendrive/SD | Copiar APK, instalar local |
+Tabelas sem tenant_id (isoladas via JOIN com cameras/users): `recordings`, `events`, `face_embeddings`, `face_alerts`, `daily_visitors`, `face_search_log`, `system_alerts`.
 
-### 4.7 Configuração
+Tenant default: **Happydo Mercadinhos** (slug: `happydo`, plan: `enterprise`).
 
-```json
-{
-  "server": "guard.flac.com.br",
-  "port": 1935,
-  "stream_key": "pdv_dct_loja_facecam",
-  "camera_source": "auto",
-  "resolution": "720p",
-  "fps": 15
-}
-```
+### Auth com tenant
+
+JWT inclui `tenant_id`. API Keys incluem `tenant_id`. Middleware `authenticate()` extrai o tenant do token/key. Helper `getTenantId(req)` disponível em todas as routes.
+
+### Stream keys
+
+Prefixo com slug do tenant: `happydo_<random>`. Callback `on_publish` valida stream key e identifica o tenant.
 
 ---
 
-## 5. Busca Cruzada por Timestamp
+## 4. Object Storage (S3)
+
+### Fluxo de gravação
+
+```
+FFmpeg grava MP4 local (/data/recordings/)
+  → INSERT no banco (file_path)
+  → Se S3 configurado:
+    → Upload para Contabo S3 (key: recordings/{tenant}/{camera}/{date}/{file})
+    → UPDATE recordings SET s3_key = ...
+    → DELETE arquivo local
+  → Se S3 não configurado:
+    → Mantém no disco local (fallback)
+```
+
+### Playback
+
+```
+GET /api/recordings/:id/stream
+  → Se recording.s3_key existe:
+    → Gera pre-signed URL (1h) → redirect 302
+  → Se s3_key NULL:
+    → Serve do disco local (Range headers)
+```
+
+### Cleanup
+
+Respeita `retention_days` por câmera. Deleta do S3 (se s3_key) e do disco local (se file_path existe). Roda a cada hora.
+
+### Migração batch
+
+Service `s3-migration.js` com controle de estado: start, pause, resume, cancel. Upload concorrente (5 simultâneos). Endpoint no dashboard para acompanhar progresso.
+
+---
+
+## 5. Nginx-RTMP
+
+- **Porta 1935:** RTMP ingest
+- **Porta 8080:** HLS + RTMP stats (XML)
+- **HLS:** fragmentos 3s, playlist 60s, cleanup automático
+- **Gravação:** gerenciada pelo Node.js (não pelo Nginx)
+- **Auth:** callback `on_publish` → `http://api:8000/hooks/on-publish` (valida stream key)
+- **Callback on_publish_done:** marca câmera offline, para gravação
+
+---
+
+## 6. API Backend (Node.js)
+
+### Serviços Background
+
+| Serviço | Intervalo | Função |
+|---------|-----------|--------|
+| Motion Detector | 3-4s/câmera | Extrai frame HLS, compara pixels, detecta pessoas/rostos |
+| Continuous Recorder | 30s | Gerencia gravação contínua |
+| Visitor Counter | 10 min | Visitantes distintos/câmera/dia |
+| Cleanup | 1 hora | Deleta gravações expiradas + S3 |
+| Disk Monitor | 15 min | Alerta 85%/90% disco, quota por câmera |
+| Camera Health | 60s | Marca offline se sem heartbeat 90s |
+| Face Service Check | 30s | Verifica disponibilidade InsightFace |
+
+### Pipeline Unificado (Motion Detector)
+
+Para cada câmera online, a cada 3-4 segundos:
+
+1. Extrai frame HLS (FFmpeg 320×240)
+2. Compara pixels → detecção de movimento
+3. Se face service disponível:
+   - YOLO detecta pessoas (corpo inteiro)
+   - InsightFace detecta rostos (two-pass: direto + person-guided)
+   - Embeddings 512D → pgvector
+   - Compara com watchlist → match >85% → alerta
+4. Movimento detectado → inicia gravação FFmpeg (MP4, pre-buffer 24s)
+5. Sem movimento 30s → para gravação → upload S3
+
+### Modos de gravação (por câmera)
+
+| Modo | Comportamento |
+|------|--------------|
+| `continuous` | Grava sempre (segmentos 15min) |
+| `motion` | Grava só com movimento |
+
+### Tipos de câmera (Migration 007)
+
+| Campo | Valores | Função |
+|-------|---------|--------|
+| `camera_purpose` | `environment` / `face` | Define se é câmera de ambiente ou facial |
+| `capture_face` | `true` / `false` | Ativa/desativa detecção facial nessa câmera |
+
+Câmeras `face` são priorizadas para contagem de visitantes.
+
+---
+
+## 7. Face Service (Python)
+
+Serviço separado: InsightFace + YOLO26n via FastAPI/Uvicorn.
 
 ### Endpoints
 
-| Escopo | Endpoint | Retorno |
-|--------|----------|---------|
-| Mesma câmera | `GET /api/cameras/:id/recording?timestamp=T&duration=300` | Trecho MP4 |
-| Mesmo PDV | `GET /api/pdvs/:id/recordings?timestamp=T` | MIBO + Guard Cam |
-| Todos PDVs | `GET /api/recordings/cross-search?timestamp=T&range=300` | Tudo ±5min |
+| Método | Endpoint | Função |
+|--------|----------|--------|
+| POST | `/detect` | Rostos (two-pass: direto + person-guided) |
+| POST | `/embed` | Embedding 512D de foto (para busca) |
+| POST | `/detect-persons` | Pessoas via YOLO26n |
+| GET | `/health` | Status dos modelos |
 
-### Integração com Face Search
+### Two-pass detection
 
-```
-Upload foto → embedding → pgvector busca → aparições com timestamps
-  → cada resultado tem link de busca cruzada
-  → Dashboard mostra mosaico daquele instante
-```
+1. Detecção direta no frame (threshold 0.3)
+2. Se nenhum rosto → YOLO detecta pessoas → crop upper body 50% → retry (threshold 0.2)
 
----
+Resolve ângulo ruim de câmeras no teto.
 
-## 6. Reconhecimento Facial (Fase 2)
+### Modelos
 
-Pipeline unificado por frame (MIBO e Guard Cam, sem distinção):
-1. Movimento → gravar?
-2. Rostos (InsightFace) → embedding 512D → pgvector
-3. Watchlist → match >85% → webhook
-
-### Casos de Uso
-
-| Caso | Descrição |
-|------|-----------|
-| Buscar suspeito | Upload foto → PDVs e horários → busca cruzada |
-| Confirmar repositor | Upload foto → chegada/saída por PDV |
-| Alerta watchlist | Rosto → webhook configurável |
-| Visitantes/dia | Pessoas distintas por PDV |
-
-### LGPD
-
-- Legítimo interesse. Embeddings não reversíveis
-- Retenção por câmera. **Watchlist permanente**
-- Acesso: Admin. Audit log de toda busca
+| Modelo | Função | Tamanho |
+|--------|--------|---------|
+| InsightFace buffalo_l | Detecção + embedding 512D | ~300MB |
+| YOLO26n | Detecção de pessoas | ~12MB |
 
 ---
 
-## 7. API Completa
+## 8. Banco de Dados
 
+PostgreSQL 16 + extensões `uuid-ossp` + `vector` (pgvector).
+
+### Migrations aplicadas
+
+| # | Arquivo | Função |
+|---|---------|--------|
+| 001 | pdvs_pulse_fields.sql | Campos Pulse + constraint modelos câmera |
+| 002 | settings_table.sql | Tabela settings (key-value) |
+| 003 | camera_recording_settings.sql | recording_mode, retention_days, motion_sensitivity |
+| 004 | face_recognition.sql | face_embeddings (HNSW), watchlist, alerts, visitors, audit |
+| 005 | face_person_linking.sql | person_id em face_embeddings |
+| 006 | alerts_and_storage_quota.sql | system_alerts + storage_quota_gb |
+| 007 | camera_purpose.sql | camera_purpose (environment/face) + capture_face |
+| 008 | multi_tenant.sql | Tabela tenants + tenant_id em todas tabelas |
+| 009 | s3_storage.sql | s3_key em recordings, face_embeddings, watchlist |
+
+### Tabelas principais
+
+| Tabela | Propósito | Tenant? |
+|--------|-----------|:-------:|
+| tenants | Clientes SaaS | — |
+| pdvs | Pontos de venda (sync Pulse) | ✅ |
+| cameras | Câmeras com stream key, modo, retenção, purpose | ✅ |
+| recordings | Gravações MP4 (local ou S3) | via camera |
+| events | motion, online, offline, error, ai_alert | via camera |
+| users | Usuários dashboard (admin, operator, viewer) | ✅ |
+| api_keys | Chaves server-to-server | ✅ |
+| webhooks | Destinos configuráveis | ✅ |
+| settings | Config key-value (Pulse, RTMP host) | global |
+| face_embeddings | Embeddings 512D + HNSW index | via camera |
+| face_watchlist | Pessoas de interesse (permanente) | ✅ |
+| face_alerts | Matches watchlist | via camera |
+| daily_visitors | Visitantes distintos/câmera/dia | via camera |
+| face_search_log | Audit log LGPD | via user |
+| system_alerts | Disco, quota, etc. | via camera |
+
+---
+
+## 9. Dashboard (React)
+
+React 18 + TypeScript + Vite. Proxy: `/api/` → api:8000, `/hls/` → nginx-rtmp:8080.
+
+### Páginas
+
+| Rota | Componente | Função |
+|------|-----------|--------|
+| `/` | Live.tsx (237 linhas) | Mosaico HLS, filtro online/offline, grid ajustável |
+| `/cameras` | Cameras.tsx (1041) | CRUD câmeras, config RTMP, modo, retenção, purpose, quota |
+| `/playback` | Playback.tsx (921) | Timeline, player, detecção facial em frames |
+| `/faces` | FaceSearch.tsx (401) | Busca facial, watchlist CRUD, status serviço |
+| `/visitors` | Visitors.tsx (358) | Contagem visitantes/PDV/dia, gráfico temporal |
+| `/pdvs` | PDVs.tsx (101) | Lista PDVs com câmeras online/offline |
+| `/monitor` | Monitoring.tsx (381) | CPU, RAM, disco, rede, Docker, S3, banco |
+| `/settings` | Settings.tsx (561) | Pulse, deploy status, config RTMP, S3 migration |
+| `/stats` | Stats.tsx (267) | RTMP real-time (bandwidth, streams, codecs) |
+
+### Auth
+
+JWT (1h) + setup inicial (primeiro admin) + roles (admin, operator, viewer). Tenant isolado no token.
+
+---
+
+## 10. API — Endpoints
+
+### Auth
 ```
-# Câmeras (MIBO + Guard Cam, unificado)
-GET    /api/cameras
-GET    /api/cameras/:id/live
-GET    /api/cameras/:id/recordings
-GET    /api/cameras/:id/recording?timestamp=T&duration=300
-GET    /api/cameras/:id/snapshot
-GET    /api/cameras/:id/download
+POST   /api/auth/login
+POST   /api/auth/setup            # Primeiro admin
+POST   /api/auth/register         # Admin only
+```
 
-# PDVs
-GET    /api/pdvs
-GET    /api/pdvs/:id/visitors
-GET    /api/pdvs/:id/recordings?timestamp=T
+### Cameras
+```
+GET    /api/cameras                # Filtros: pdv_id, status, model
+POST   /api/cameras                # Cadastrar (gera stream key com prefixo tenant)
+PUT    /api/cameras/:id            # Nome, modelo, modo, retenção, purpose, quota
+DELETE /api/cameras/:id
+GET    /api/cameras/:id/live       # URL HLS
+GET    /api/cameras/:id/recordings # Por período
+GET    /api/cameras/:id/recording  # Por timestamp exato
+GET    /api/cameras/:id/snapshot   # Frame JPEG (501 — pendente)
+GET    /api/cameras/:id/download   # Trecho MP4 (501 — pendente)
+GET    /api/cameras/models         # Modelos suportados
+```
 
-# Busca Cruzada
-GET    /api/recordings/cross-search?timestamp=T&range=300
+### Recordings
+```
+GET    /api/recordings             # Filtros: camera_id, from, to
+GET    /api/recordings/by-day      # Timeline por dia
+GET    /api/recordings/:id/stream  # Stream MP4 (S3 pre-signed URL ou local)
+GET    /api/recordings/:id/download
+DELETE /api/recordings/:id
+POST   /api/recordings/cleanup     # Forçar limpeza
+POST   /api/recordings/:id/detect-faces
+POST   /api/recordings/:id/search-face
+GET    /api/recordings/s3-status          # Status do S3
+POST   /api/recordings/s3-migrate         # Iniciar migração batch
+GET    /api/recordings/s3-migrate/status   # Progresso migração
+POST   /api/recordings/s3-migrate/pause
+POST   /api/recordings/s3-migrate/resume
+POST   /api/recordings/s3-migrate/cancel
+```
 
-# Face Recognition
-POST   /api/faces/search
+### Face Recognition
+```
+POST   /api/faces/search           # Upload foto → aparições (admin only)
+GET    /api/faces/status
 GET    /api/faces/watchlist
 POST   /api/faces/watchlist
+PUT    /api/faces/watchlist/:id
 DELETE /api/faces/watchlist/:id
-
-# Guard Cam
-GET    /api/guard-cam/config/:device_id
-POST   /api/guard-cam/heartbeat
-
-# Eventos e Webhooks
-GET    /api/events
-POST   /api/webhooks
+GET    /api/faces/watchlist/:id/photo
+GET    /api/faces/alerts
+PUT    /api/faces/alerts/:id/acknowledge
+GET    /api/faces/visitors          # Por período/PDV
 ```
 
-Auth: API Key (server-to-server), JWT (dashboard), device token (Guard Cam).
+### PDVs + Monitoramento + Outros
+```
+GET    /api/pdvs                    # Com contagem câmeras
+POST   /api/pdvs/sync              # Sync do HappyDoPulse
+GET    /api/events                  # Filtros: camera_id, pdv_id, type
+POST   /api/webhooks                # Admin only
+GET    /api/monitor/system          # CPU, RAM, disco, rede, containers
+GET    /api/monitor/disk-breakdown
+GET    /api/alerts                  # System alerts
+PUT    /api/alerts/:id/resolve
+GET    /api/settings/pulse
+PUT    /api/settings/pulse
+POST   /api/settings/pulse/test
+GET    /api/deploy-status
+GET    /health
+```
+
+### Auth: JWT + API Key + query param token. Rate limit: 200 req/min.
 
 ---
 
-## 8. Ambiente de Desenvolvimento
+## 11. CI/CD
 
-100% cloud. Sem ferramentas locais.
-
-| Função | Ferramenta |
-|--------|-----------|
-| IDE | Claude Code (SSH no VPS) |
-| Repositório | GitHub (`flac-guard`) |
-| CI/CD Server | GitHub Actions → deploy VPS |
-| CI/CD Android | GitHub Actions → build APK |
-| Banco | PostgreSQL + pgvector no VPS |
-
----
-
-## 9. Custos
-
-| | Valor |
-|--|-------|
-| CAPEX Pi Zeros | ~R$ 3.000 |
-| CAPEX webcams USB (Sunmi/Lenovo) | ~R$ 2.000-2.600 |
-| **CAPEX total** | **~R$ 5.000-5.600** |
-| OPEX Fase 2 | ~R$ 55/mês |
-| OPEX Rollout | ~R$ 55-100/mês |
-
----
-
-## 10. Implementação
-
-### Fase 1 — PoC ✅
-3 câmeras MIBO RTMP. Nginx-RTMP + dashboard. 72h estável.
-
-### Fase 2 — Produto (5-6 semanas) ⏳
-
-**Bloco A — Infraestrutura (sem 1-2)**
-1-4: HTTPS, snapshot/download, limpeza por câmera, seed PDVs
-
-**Bloco B — Motion + Gravação (sem 2-3)**
-5-8: Motion detector, FFmpeg por evento, API eventos, sensibilidade
-
-**Bloco C — Face Recognition (sem 3-5)**
-9-15: InsightFace, pgvector, indexação, face search, watchlist, visitantes, audit
-
-**Bloco D — Desenvolvimento Guard Cam + Busca Cruzada (sem 4-6)**
-16. Scaffold Kotlin + Gradle no repo `guard-cam/`
-17. GitHub Actions: workflow build APK
-18. CameraManager: câmera integrada + USB UVC
-19. RtmpPublisher: H.264 hardware + RTMP push
-20. StreamService: Foreground Service + auto-start
-21. Config via QR code
-22. API: /guard-cam/config + heartbeat
-23. Testar PIPO X9R + Sunmi D2 Mini + Lenovo Tab
-24. Distribuição APK
-25. Dashboard: busca cruzada (mosaico)
-26. API: /pdvs/:id/recordings + /recordings/cross-search
-
-### Fase 3 — Piloto (5 PDVs)
-1. Pi Zero para ICs
-2. Guard Cam em 5 dispositivos + webcams
-3. Alertas offline (webhook)
-4. Auth JWT
-
-### Fase 4 — Rollout (~80 câmeras + ~70 Guard Cams)
-1. Config ~77 câmeras iM
-2. Guard Cam em Sunmi/Lenovo
-3. iM3 C extra nos PDVs PIPO (captura facial)
-4. Pi Zeros para ICs
-5. API Key integração
-6. Monitoramento
-
-### Fase 5 — IA Avançada
-1. YOLO: ações suspeitas, contagem produtos
-2. Heatmaps
-3. P2P TUTK/Kalay
-4. Migrar IC → iM
-
----
-
-## 11. Estrutura do Repositório
+### Deploy automático
 
 ```
-flac-guard/
-├── ARCHITECTURE.md
+Push GitHub (main) → webhook :9000 → deploy.sh:
+  git pull → docker compose build (por serviço, com build args)
+  → docker compose up -d → health check todos serviços
+  → deploy-status.json (commit, status, tempos, containers)
+```
+
+Self-update: deploy.sh detecta se ele próprio mudou e faz re-exec.
+
+### Subdomínios
+
+Deploy webhook: deploy-guard.flactech.com.br:9000
+
+---
+
+## 12. Integrações
+
+### HappyDoPulse
+
+Sync de PDVs via API REST JWT. Credenciais configuráveis via dashboard ou env. Paginação automática.
+
+### Contabo S3
+
+Upload de gravações + face images + watchlist photos. Pre-signed URLs para playback. Migração batch com controle de estado.
+
+---
+
+## 13. Inventário de Câmeras
+
+### Modelos suportados (constraint banco)
+
+| Modelo | RTMP | Grupo | Purpose |
+|--------|:----:|:-----:|---------|
+| iM3 C | ✅ | im | environment / face |
+| iM5 SC | ✅ | im | environment / face |
+| iMX | ✅ | im | environment / face |
+| IC3 | ❌ | ic | environment |
+| IC5 | ❌ | ic | environment |
+
+### Nota sobre RTMP no Brasil
+
+RTMP push nativo em câmeras Wi-Fi é praticamente exclusivo da Intelbras (linha MIBO + VIP). Nenhuma outra marca de consumo (TP-Link, Xiaomi, Hikvision consumer) oferece RTMP push em câmeras Wi-Fi baratas no Brasil.
+
+---
+
+## 14. Segurança
+
+- Stream keys únicas com prefixo de tenant, validadas via callback Nginx → API
+- JWT com roles + tenant_id. API Key com tenant_id
+- Rate limiting: 200 req/min
+- Busca facial: admin only + audit log (LGPD)
+- Embeddings não reversíveis. Watchlist permanente, remoção manual
+- Retenção configurável por câmera (padrão 21, máximo 60 dias)
+- Webhook deploy autenticado com HMAC-SHA256
+- S3: pre-signed URLs com expiração (1h)
+
+---
+
+## 15. Estrutura do Repositório
+
+```
+FlacGuard/
+├── .env.example
 ├── docker-compose.yml
-├── .github/workflows/
-│   ├── deploy.yml
-│   └── android-build.yml
+├── ARCHITECTURE.md
+├── README.md
+├── deploy/
+│   ├── webhook.js                  # HTTP :9000, GitHub webhook
+│   ├── deploy.sh                   # Build + restart + health check
+│   ├── setup.sh                    # Systemd + secret
+│   └── flac-guard-webhook.service
 ├── server/
-│   ├── nginx-rtmp/nginx.conf
-│   ├── api/src/
-│   │   ├── routes/
-│   │   │   ├── cameras.js
-│   │   │   ├── recordings.js
-│   │   │   ├── faces.js
-│   │   │   ├── guard-cam.js
-│   │   │   ├── events.js
-│   │   │   └── webhooks.js
-│   │   ├── services/
-│   │   │   ├── motion-detector.js
-│   │   │   ├── face-recognition.js
-│   │   │   ├── watchlist.js
-│   │   │   ├── recorder.js
-│   │   │   └── health.js
-│   │   └── db/
-├── dashboard/src/pages/
-│   ├── Live.jsx
-│   ├── Playback.jsx
-│   ├── CrossSearch.jsx
-│   ├── FaceSearch.jsx
-│   ├── Watchlist.jsx
-│   ├── Visitors.jsx
-│   ├── GuardCams.jsx
-│   └── Settings.jsx
-├── guard-cam/
-│   ├── build.gradle.kts
-│   ├── settings.gradle.kts
-│   └── app/src/main/
-│       ├── AndroidManifest.xml
-│       └── java/com/flacguard/guardcam/
-│           ├── GuardCamApp.kt
-│           ├── service/
-│           │   ├── StreamService.kt
-│           │   ├── CameraManager.kt
-│           │   └── RtmpPublisher.kt
-│           ├── config/
-│           │   ├── DeviceConfig.kt
-│           │   └── QrCodeScanner.kt
-│           └── ui/
-│               ├── SetupActivity.kt
-│               └── StatusOverlay.kt
-├── agent/ (Pi Zero)
+│   ├── nginx-rtmp/
+│   │   ├── nginx.conf              # RTMP + HLS + callbacks
+│   │   └── Dockerfile
+│   ├── api/
+│   │   ├── Dockerfile              # Node 20 + FFmpeg
+│   │   ├── package.json            # Express, pg, aws-sdk, bcrypt, jwt
+│   │   └── src/
+│   │       ├── index.js            # Bootstrap + 7 background services
+│   │       ├── db/
+│   │       │   ├── schema.sql
+│   │       │   ├── pool.js         # PG pool + timezone SP
+│   │       │   └── migrations/     # 001-009
+│   │       ├── routes/
+│   │       │   ├── auth.js         # Login, setup, register
+│   │       │   ├── cameras.js      # CRUD + live + recordings + snapshot
+│   │       │   ├── recordings.js   # Playback (S3/local) + cleanup + face + S3 migration
+│   │       │   ├── events.js
+│   │       │   ├── pdvs.js         # Lista + sync Pulse
+│   │       │   ├── faces.js        # Search + watchlist + visitors + alerts
+│   │       │   ├── hooks.js        # Nginx RTMP callbacks
+│   │       │   ├── webhooks.js
+│   │       │   ├── settings.js     # Pulse config + RTMP host
+│   │       │   ├── monitor.js      # System stats + S3 status
+│   │       │   └── alerts.js       # System alerts
+│   │       └── services/
+│   │           ├── tenant.js           # getTenantId, tenantFilter, getTenantSlug
+│   │           ├── storage.js          # S3 upload/download/delete/presign
+│   │           ├── s3-migration.js     # Batch migration local→S3
+│   │           ├── motion-detector.js  # Pipeline unificado
+│   │           ├── recorder.js         # FFmpeg + S3 upload
+│   │           ├── recording.js        # Queries de busca
+│   │           ├── face-recognition.js # Client face-service
+│   │           ├── cleanup.js          # Retenção + S3 delete
+│   │           ├── disk-monitor.js     # Alertas disco/quota
+│   │           ├── health.js           # Camera offline detection
+│   │           ├── rtmp.js             # URLs RTMP/HLS
+│   │           ├── pulse.js            # Client HappyDoPulse
+│   │           └── auth.js             # JWT + bcrypt + API Key + tenant
+│   ├── face-service/
+│   │   ├── Dockerfile              # Python 3.11 + InsightFace + YOLO
+│   │   ├── app.py                  # FastAPI: detect, embed, detect-persons
+│   │   └── requirements.txt
+│   └── recorder/
+│       └── record.sh               # FFmpeg segment recording (alternativo)
+├── dashboard/
+│   ├── Dockerfile                  # Node build → Nginx serve
+│   ├── nginx.conf                  # Proxy /api/ e /hls/
+│   └── src/
+│       ├── App.tsx                 # Router (9 páginas) + nav
+│       ├── context/AuthContext.tsx  # JWT + tenant
+│       ├── components/HlsPlayer.tsx
+│       └── pages/                  # Live, Cameras, Playback, FaceSearch,
+│                                   # Visitors, PDVs, Monitoring, Settings, Stats, Login
+├── agent/                          # Pi Zero (RTSP→RTMP bridge)
+│   ├── install.sh
+│   ├── rtsp-to-rtmp.sh
+│   └── systemd/flac-guard-agent.service
 └── docs/
-    ├── guard-cam-setup.md
-    └── guard-cam-distribution.md
+    ├── API_EXTERNAL_ACCESS.md      # Integração HappyDoPulse
+    ├── SETUP_S3_CONTABO.md         # Guia S3
+    ├── MIGRACAO_NOVO_SERVIDOR.md   # Guia migração VPS
+    ├── Plano_Escala_Fase_2_5.md    # Plano de escala
+    ├── cameras.md                  # Inventário
+    ├── rtmp-setup.md               # Config câmeras MIBO
+    └── vps-setup.md                # Setup VPS
 ```
 
 ---
 
-## 12. Notas
+## 16. Roadmap SaaS
 
-### Kotlin vs React Native
-~30MB vs ~100MB RAM. Em 2GB, essa diferença é a viabilidade.
+### Concluído ✅
 
-### Armazenamento Unificado
-MIBO e Guard Cam: mesmo pipeline, mesmos endpoints. Distinção apenas lógica.
+- [x] Fase 1: PoC (3 câmeras RTMP, dashboard)
+- [x] Fase 2: Produto (motion detector, face recognition, gravação, dashboard completo)
+- [x] Fase 2.5A: Multi-tenant + S3 (tenant_id, storage.js, s3-migration, cleanup S3)
+- [x] VPS upgrade (VPS 20 NVMe)
+- [x] DNS + subdomínios configurados
+- [x] Email: Google Workspace (@flactech.com.br) + Brevo (transacional)
 
-### PDVs PIPO — câmera extra
-PIPOs têm problema de energia USB (reiniciam com 2 dispositivos). Webcam inviável. Solução: iM3 C (~R$ 220) ou iMX (~R$ 180) extra, posicionada na altura do rosto, RTMP direto pro servidor.
+### Próximo: Fase 2.5B — VPS de Controle
 
-### RTMP no mercado brasileiro
-RTMP push nativo é praticamente exclusivo da Intelbras (linha MIBO Wi-Fi + linha VIP cabeada). Nenhuma outra marca de consumo (TP-Link, Xiaomi, Hikvision consumer) oferece RTMP push em câmeras Wi-Fi baratas no Brasil.
+Novo repositório `flac-guard-control` com:
+- Licensing API (tenants, planos, nós)
+- Stripe billing (subscriptions por câmera)
+- Landing page (flactech.com.br) + pricing table
+- Admin dashboard (app.flactech.com.br)
+- Email transacional (Brevo SMTP + nodemailer)
+- Node health monitoring
+- Provisionamento automático de nós (Contabo API)
+
+### Planos SaaS definidos
+
+| Plano | Preço/câmera | PDVs | Câm/PDV | Retenção |
+|-------|:-----------:|:----:|:-------:|:--------:|
+| Tester | Grátis (30 dias) | 1 | 2 | 14 dias |
+| Monitoring | R$ 49,90 | 30 | 3 | 21 dias |
+| Advanced | R$ 59,90 | 100 | 3 | 21 dias |
+| Ultra | R$ 44,90 | 300 | 3 | 21 dias |
+
+Cobrança por câmera ativa + 1 facial grátis por PDV.
+
+### Pendências (não bloqueiam SaaS)
+
+- Endpoints snapshot e download (retornam 501)
+- UI gestão de tenants (CRUD no dashboard)
+- CRUD de API Keys
+- Migração S3 → Backblaze B2 + Cloudflare CDN
+- Guard Cam (app Android Kotlin para captura facial frontal)
