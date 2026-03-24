@@ -1,9 +1,11 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import { pool } from '../db/pool.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-production';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
+const INTERNAL_KEY = process.env.INTERNAL_API_KEY || '';
 
 export function generateToken(user) {
   return jwt.sign(
@@ -26,11 +28,33 @@ export async function comparePassword(password, hash) {
 }
 
 /**
- * Express middleware: authenticates via JWT (Authorization: Bearer ...)
- * or API Key (X-API-Key header).
+ * Express middleware: authenticates via JWT (Authorization: Bearer ...),
+ * API Key (X-API-Key header), or Internal Gateway Key (X-Internal-Key + X-Tenant-Id).
+ *
+ * Gateway auth: when the Control gateway proxies requests on behalf of a tenant,
+ * it sends X-Internal-Key (shared secret) + X-Tenant-Id. This authenticates the
+ * request in the context of that tenant without requiring a JWT.
  */
 export function authenticate(req, res, next) {
-  // Try API Key first
+  // Try Internal Gateway Key first (Control gateway proxying for a tenant)
+  const internalKey = req.headers['x-internal-key'];
+  const gatewayTenantId = req.headers['x-tenant-id'];
+  if (internalKey && gatewayTenantId) {
+    if (!INTERNAL_KEY) {
+      return res.status(503).json({ error: 'Internal API not configured' });
+    }
+    try {
+      if (!crypto.timingSafeEqual(Buffer.from(internalKey), Buffer.from(INTERNAL_KEY))) {
+        return res.status(401).json({ error: 'Invalid internal key' });
+      }
+    } catch {
+      return res.status(401).json({ error: 'Invalid internal key' });
+    }
+    req.auth = { type: 'gateway', tenantId: gatewayTenantId, role: 'admin' };
+    return next();
+  }
+
+  // Try API Key
   const apiKey = req.headers['x-api-key'];
   if (apiKey) {
     pool
@@ -69,8 +93,8 @@ export function authenticate(req, res, next) {
  */
 export function authorize(...roles) {
   return (req, res, next) => {
-    // API keys have full access
-    if (req.auth?.type === 'api_key') return next();
+    // API keys and gateway have full access
+    if (req.auth?.type === 'api_key' || req.auth?.type === 'gateway') return next();
     if (!roles.includes(req.auth?.user?.role)) {
       return res.status(403).json({ error: 'Insufficient permissions' });
     }
