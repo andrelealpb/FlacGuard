@@ -2,41 +2,37 @@
 
 > Repositório: `github.com/andrelealpb/flac-guard-control`
 > VPS: Cloud VPS 10 Contabo ($3.96/mês, 4 cores, 8GB, US-Central)
-> Domínio: flactech.com.br (registro Registro.br, DNS Cloudflare)
-> Função: Dashboard cliente unificado, gateway JSON, licensing, billing, provisioning
+> Domínio: flactech.com.br (Registro.br + Cloudflare DNS)
 > Princípio: Control só trafega JSON — vídeo vai direto nó/S3
 
 ---
 
 ## 1. Visão Geral
 
-O Control é o ponto único de acesso do SaaS. Serve o dashboard React para o cliente, faz gateway JSON para os nós (consulta em paralelo, merge), e gerencia licensing/billing/provisioning.
+O Control é o ponto único de acesso do SaaS e o hub de deploy.
 
-**Nunca trafega vídeo.** Live (HLS) vai direto do browser para o nó. Playback vai direto do browser para o S3. O Control retorna URLs absolutas que o browser usa para conectar diretamente.
+**Faz:** Dashboard cliente (SPA), gateway JSON multi-nó, billing (Stripe), provisioning (Contabo + Cloudflare), deploy multi-nó, admin dashboard, landing page, email transacional.
 
-### O que o Control faz
+**Não faz:** Receber RTMP, processar vídeo/facial, proxy de streams HLS/S3.
 
-- Dashboard do cliente (guard.flactech.com.br) — React SPA
-- Gateway API — proxy JSON para nós, consolida resultados
-- Retorna URLs de vídeo apontando direto para nó/S3
-- Licensing — tenants, planos, limites
-- Billing — Stripe subscriptions
-- Provisioning — Contabo API (VPS) + Cloudflare API (DNS) + Certbot (SSL)
-- Landing page — flactech.com.br
-- Admin dashboard — app.flactech.com.br
-- Health monitor — saúde dos nós
-- Email transacional — Brevo SMTP
+### Já implementado ✅
 
-### O que o Control NÃO faz
+- Schema + 8 routes (775 linhas) + 6 services (674 linhas) + 2 scripts
+- Stripe completo: checkout, 7 webhooks, portal, free tier, coupons (304 linhas)
+- Admin dashboard: 5 páginas (Dashboard, Tenants, Nodes, Billing, Login)
+- Landing: 4 páginas (index, pricing, checkout, welcome)
+- Contabo API: provisionar VPS 30 + cloud-init
+- Email: Brevo SMTP + 5 templates
+- Nginx: rate limiting + SSL hardening
 
-- Receber RTMP
-- Processar vídeo/facial
-- Proxy de streams HLS
-- Proxy de playback MP4/S3
+### A implementar
 
-### Pré-requisitos concluídos ✅
-
-Nó #1 (147.93.141.133): multi-tenant, S3, face recognition, 5 câmeras ativas.
+- Cloudflare API (services/cloudflare.js)
+- tenant_nodes (N:N) + camera_node_map
+- Gateway multi-nó (services/gateway.js + routes gateway-*.js)
+- Dashboard cliente (client-dashboard/)
+- Cloud-init completo (.env injetado, Certbot, Nginx, webhook)
+- Deploy multi-nó (POST /api/admin/deploy)
 
 ---
 
@@ -46,277 +42,97 @@ Nó #1 (147.93.141.133): multi-tenant, S3, face recognition, 5 câmeras ativas.
 |-----------|-----------|
 | API + Gateway | Node.js 20 + Express (ESM) |
 | Dashboard cliente | React 18 + TypeScript + Vite |
-| Dashboard admin | React 18 + TypeScript + Vite |
-| Landing page | HTML/CSS/JS estático |
-| Banco | PostgreSQL 16 |
-| Billing | Stripe SDK |
-| DNS automático | Cloudflare API |
-| Email corporativo | Google Workspace (@flactech.com.br) |
+| Dashboard admin | React (JSX) + Vite |
+| Landing | HTML/CSS estático |
+| Banco | PostgreSQL 16 Alpine |
+| Billing | Stripe SDK v17 |
+| DNS | Cloudflare API |
+| VPS provisioning | Contabo API |
+| Email corporativo | Google Workspace |
 | Email transacional | Brevo SMTP + nodemailer |
-| Provisioning VPS | Contabo API (REST) |
-| Proxy/SSL | Nginx + Let's Encrypt |
-| Containers | Docker Compose (5 containers) |
 
 ---
 
-## 3. Docker Compose
+## 3. Docker Compose (5 containers)
 
 ```yaml
-name: flac-guard-control
-
 services:
-  api:
-    build: ./server
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://flac_control:flac_control@db:5432/flac_control
-      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
-      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
-      - BREVO_SMTP_HOST=${BREVO_SMTP_HOST:-smtp-relay.brevo.com}
-      - BREVO_SMTP_PORT=${BREVO_SMTP_PORT:-587}
-      - BREVO_SMTP_USER=${BREVO_SMTP_USER}
-      - BREVO_SMTP_PASS=${BREVO_SMTP_PASS}
-      - EMAIL_FROM=${EMAIL_FROM:-noreply@flactech.com.br}
-      - EMAIL_REPLY_TO=${EMAIL_REPLY_TO:-suporte@flactech.com.br}
-      - CONTABO_API_CLIENT_ID=${CONTABO_API_CLIENT_ID}
-      - CONTABO_API_CLIENT_SECRET=${CONTABO_API_CLIENT_SECRET}
-      - CONTABO_API_USER=${CONTABO_API_USER}
-      - CONTABO_API_PASSWORD=${CONTABO_API_PASSWORD}
-      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
-      - CLOUDFLARE_ZONE_ID=${CLOUDFLARE_ZONE_ID}
-      - JWT_SECRET=${JWT_SECRET}
-      - NODE_ENV=production
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: unless-stopped
-
-  client-dashboard:
-    build: ./client-dashboard
-    ports:
-      - "3000:3000"
-    restart: unless-stopped
-
-  admin-dashboard:
-    build: ./admin-dashboard
-    ports:
-      - "3001:3001"
-    restart: unless-stopped
-
-  landing:
-    build: ./landing
-    ports:
-      - "3002:80"
-    restart: unless-stopped
-
-  db:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_USER=flac_control
-      - POSTGRES_PASSWORD=flac_control
-      - POSTGRES_DB=flac_control
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flac_control"]
-      interval: 5s
-    restart: unless-stopped
-
-volumes:
-  pgdata:
+  api:              # :8000 Express (gateway + admin + billing + deploy)
+  client-dashboard: # :3000 Dashboard do CLIENTE (React)
+  admin-dashboard:  # :3001 Dashboard ADMIN (React)
+  landing:          # :3002 Site comercial (HTML)
+  db:               # PostgreSQL 16 Alpine
 ```
+
+Env vars: DATABASE_URL, JWT_SECRET, STRIPE_*, BREVO_*, CONTABO_*, CLOUDFLARE_*, GITHUB_WEBHOOK_SECRET.
 
 ---
 
-## 4. Schema do Banco
+## 4. Schema (evolução multi-nó)
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- Schema atual (implementado) + evolução necessária
 
--- Planos
-CREATE TABLE plans (
-  id                    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name                  VARCHAR(50)  NOT NULL UNIQUE,
-  display_name          VARCHAR(100) NOT NULL,
-  max_pdvs              INTEGER      NOT NULL,
-  max_cameras_per_pdv   INTEGER      NOT NULL DEFAULT 3,
-  free_facial_per_pdv   INTEGER      NOT NULL DEFAULT 1,
-  retention_days        INTEGER      NOT NULL DEFAULT 21,
-  has_video_search      BOOLEAN      NOT NULL DEFAULT false,
-  has_visitors          BOOLEAN      NOT NULL DEFAULT false,
-  has_erp_integration   BOOLEAN      NOT NULL DEFAULT false,
-  price_per_camera_brl  NUMERIC(8,2) NOT NULL DEFAULT 0,
-  trial_days            INTEGER      NOT NULL DEFAULT 0,
-  stripe_product_id     VARCHAR(100),
-  stripe_price_id       VARCHAR(100),
-  is_active             BOOLEAN      NOT NULL DEFAULT true,
-  sort_order            INTEGER      NOT NULL DEFAULT 0,
-  created_at            TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-
-INSERT INTO plans (name, display_name, max_pdvs, max_cameras_per_pdv, retention_days,
-  has_video_search, has_visitors, has_erp_integration,
-  price_per_camera_brl, trial_days, sort_order)
-VALUES
-  ('tester',     'Tester',     1,   2,  14, false, false, false, 0,     30, 1),
-  ('monitoring', 'Monitoring', 30,  3,  21, true,  true,  false, 49.90, 0,  2),
-  ('advanced',   'Advanced',   100, 3,  21, true,  true,  true,  59.90, 0,  3),
-  ('ultra',      'Ultra',      300, 3,  21, true,  true,  true,  44.90, 0,  4);
-
--- Nós de processamento
-CREATE TABLE nodes (
-  id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name                VARCHAR(100) NOT NULL,
-  host                VARCHAR(255) NOT NULL,     -- node-N.flactech.com.br
-  ip_address          VARCHAR(45),               -- IP direto (backup)
-  rtmp_port           INTEGER      NOT NULL DEFAULT 1935,
-  api_port            INTEGER      NOT NULL DEFAULT 8000,
-  hls_port            INTEGER      NOT NULL DEFAULT 8080,
-  api_key             VARCHAR(100) NOT NULL,
-  max_cameras         INTEGER      NOT NULL DEFAULT 40,
-  current_cameras     INTEGER      NOT NULL DEFAULT 0,
-  vps_tier            VARCHAR(20)  NOT NULL DEFAULT 'vps30',
-  region              VARCHAR(50)  NOT NULL DEFAULT 'us-central',
-  contabo_instance_id VARCHAR(100),
-  cloudflare_record_id VARCHAR(100),             -- para deletar DNS se aposentar nó
-  is_shared           BOOLEAN      NOT NULL DEFAULT false,
-  ssl_provisioned     BOOLEAN      NOT NULL DEFAULT false,
-  status              VARCHAR(20)  NOT NULL DEFAULT 'active'
-    CHECK (status IN ('active', 'provisioning', 'maintenance', 'retired')),
-  last_health_at      TIMESTAMPTZ,
-  health_data         JSONB        DEFAULT '{}',
-  created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  updated_at          TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-
--- Tenants
-CREATE TABLE tenants (
-  id                     UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name                   VARCHAR(255) NOT NULL,
-  slug                   VARCHAR(100) NOT NULL UNIQUE,
-  email                  VARCHAR(255) NOT NULL,
-  phone                  VARCHAR(20),
-  company_name           VARCHAR(255),
-  cnpj                   VARCHAR(20),
-  plan_id                UUID         NOT NULL REFERENCES plans(id),
-  stripe_customer_id     VARCHAR(100),
-  stripe_subscription_id VARCHAR(100),
-  status                 VARCHAR(20)  NOT NULL DEFAULT 'trial'
-    CHECK (status IN ('trial', 'active', 'past_due', 'canceled', 'suspended')),
-  trial_ends_at          TIMESTAMPTZ,
-  total_cameras          INTEGER      NOT NULL DEFAULT 0,
-  total_pdvs             INTEGER      NOT NULL DEFAULT 0,
-  billable_cameras       INTEGER      NOT NULL DEFAULT 0,
-  settings               JSONB        DEFAULT '{}',
-  created_at             TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  updated_at             TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-
--- Tenant ↔ Nós (N:N)
-CREATE TABLE tenant_nodes (
-  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  tenant_id        UUID    NOT NULL REFERENCES tenants(id),
-  node_id          UUID    NOT NULL REFERENCES nodes(id),
-  camera_slots     INTEGER NOT NULL DEFAULT 40,
-  assigned_cameras INTEGER NOT NULL DEFAULT 0,
-  is_primary       BOOLEAN NOT NULL DEFAULT false,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE(tenant_id, node_id)
-);
-
--- Câmera → Nó (qual câmera está em qual nó)
-CREATE TABLE camera_node_map (
-  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  tenant_id   UUID         NOT NULL REFERENCES tenants(id),
-  node_id     UUID         NOT NULL REFERENCES nodes(id),
-  camera_id   UUID         NOT NULL,  -- ID da câmera no banco do nó
-  camera_name VARCHAR(255),
-  pdv_name    VARCHAR(255),
-  stream_key  VARCHAR(100),
-  created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  UNIQUE(tenant_id, camera_id)
-);
-
--- Admin users
-CREATE TABLE admin_users (
-  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  email           VARCHAR(255) NOT NULL UNIQUE,
-  hashed_password VARCHAR(255) NOT NULL,
-  full_name       VARCHAR(255) NOT NULL,
-  role            VARCHAR(20)  NOT NULL DEFAULT 'admin',
-  is_active       BOOLEAN      NOT NULL DEFAULT true,
-  created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-
--- Billing events
-CREATE TABLE billing_events (
-  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  tenant_id       UUID         NOT NULL REFERENCES tenants(id),
-  stripe_event_id VARCHAR(100) UNIQUE,
-  event_type      VARCHAR(100) NOT NULL,
-  amount_brl      NUMERIC(10,2),
-  metadata        JSONB        DEFAULT '{}',
-  created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-
--- Node health log
-CREATE TABLE node_health_log (
-  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  node_id        UUID    NOT NULL REFERENCES nodes(id),
-  cpu_percent    INTEGER,
-  mem_percent    INTEGER,
-  disk_percent   INTEGER,
-  cameras_online INTEGER,
-  cameras_total  INTEGER,
-  response_ms    INTEGER,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_tenant_nodes_tenant ON tenant_nodes(tenant_id);
-CREATE INDEX idx_camera_node_tenant ON camera_node_map(tenant_id);
-CREATE INDEX idx_camera_node_node ON camera_node_map(node_id);
-CREATE INDEX idx_node_health ON node_health_log(node_id, created_at DESC);
+plans                    -- ✅ 4 planos (tester, monitoring, advanced, ultra)
+nodes                    -- ✅ host, api_key, max_cameras, status, contabo_instance_id
+                         -- ⏳ Adicionar: ip_address, cloudflare_record_id, vps_tier,
+                         --    is_shared, ssl_provisioned, webhook_secret
+tenants                  -- ✅ plan_id, stripe IDs, status
+                         -- ⏳ Remover node_id (migrar para tenant_nodes)
+tenant_nodes             -- ⏳ NOVA: tenant_id, node_id, camera_slots, assigned_cameras
+camera_node_map          -- ⏳ NOVA: tenant_id, node_id, camera_id, stream_key
+deploy_log               -- ⏳ NOVA: node_id, commit, status, duration_ms, created_at
+admin_users              -- ✅
+billing_events           -- ✅
+node_health_log          -- ✅
 ```
 
 ---
 
 ## 5. API — Endpoints
 
-### Gateway (dashboard do cliente)
-
-Retorna JSON consolidado de N nós. URLs de vídeo apontam direto para nó/S3.
+### Gateway (dashboard cliente, JWT com tenant_id)
 
 ```
-POST   /api/auth/login              # JWT com tenant_id
-POST   /api/auth/setup              # Primeiro admin do tenant
+POST   /api/auth/login              # JWT
+POST   /api/auth/setup              # Primeiro admin
 
-GET    /api/cameras                  # Merge de todos os nós
-POST   /api/cameras                  # Seleciona nó → cria no nó → registra camera_node_map
-PUT    /api/cameras/:id              # Proxy para nó da câmera
+GET    /api/cameras                  # Merge todos os nós
+POST   /api/cameras                  # Seleciona nó → cria → registra camera_node_map
+PATCH  /api/cameras/:id             # Proxy para nó da câmera
 DELETE /api/cameras/:id
+GET    /api/cameras/:id/live         # URL HTTPS do nó (browser conecta direto)
+GET    /api/cameras/models
+GET    /api/cameras/stream-names     # Merge
+GET    /api/cameras/disk-usage       # Merge
 
-GET    /api/cameras/:id/live         # Retorna { hls_url: "https://node-N.flactech.com.br/hls/..." }
-                                     # Browser conecta DIRETO no nó
-
-GET    /api/recordings               # Merge de todos os nós
+GET    /api/recordings               # Merge
 GET    /api/recordings/by-day        # Merge
-GET    /api/recordings/:id/stream    # Retorna { url: "https://usc1.contabostorage.com/...?sig=..." }
-                                     # Browser conecta DIRETO no S3
+GET    /api/recordings/:id/stream    # Pre-signed URL S3 (browser conecta direto)
+GET    /api/recordings/:id/thumbnail # Proxy do nó
+POST   /api/recordings/:id/detect-faces   # Proxy
+POST   /api/recordings/:id/search-face    # Proxy
 
-POST   /api/faces/search             # Distribui para TODOS os nós → merge por score
+POST   /api/faces/search             # Distribui TODOS nós → merge por score
 GET    /api/faces/watchlist           # Merge
-POST   /api/faces/watchlist           # Replica em TODOS os nós
-GET    /api/faces/visitors            # Merge
+POST   /api/faces/watchlist           # Replica em TODOS nós
+POST   /api/faces/watchlist/from-appearance
+PATCH  /api/faces/watchlist/:id      # Proxy
+DELETE /api/faces/watchlist/:id      # Proxy + replica delete
 GET    /api/faces/alerts              # Merge
+GET    /api/faces/visitors            # Merge
+GET    /api/faces/persons             # Merge
+POST   /api/faces/persons             # Proxy (nó do embedding)
+POST   /api/faces/persons/:id/search  # Distribui TODOS nós → merge
+POST   /api/faces/persons/:id/watchlist  # Proxy + replica
 
 GET    /api/pdvs                     # Merge
-POST   /api/pdvs/sync                # Sync em todos os nós
+POST   /api/pdvs/sync                # Sync em todos nós
 GET    /api/events                   # Merge
-GET    /api/monitor/system           # Stats consolidados de N nós
+GET    /api/monitor/system           # Stats consolidados
 ```
 
-### Public (landing page)
+### Public (✅ implementado)
 
 ```
 GET    /api/plans
@@ -325,7 +141,7 @@ POST   /api/billing/webhook
 GET    /api/billing/portal/:slug
 ```
 
-### Admin
+### Admin (✅ implementado)
 
 ```
 GET/POST/PUT  /api/admin/tenants
@@ -333,10 +149,18 @@ GET/POST      /api/admin/nodes
 POST          /api/admin/nodes/provision
 GET           /api/admin/billing/overview
 GET           /api/admin/dashboard
-POST          /api/admin/auth/login
+POST          /api/admin/auth/login|setup
 ```
 
-### Internal (nós → control)
+### Deploy (⏳ novo)
+
+```
+POST   /api/admin/deploy              # GitHub webhook → redistribui para nós
+POST   /api/admin/deploy/node/:id     # Deploy manual em nó específico
+GET    /api/admin/deploy/status        # Status último deploy por nó
+```
+
+### Internal (✅ implementado, nós → control)
 
 ```
 POST   /api/internal/nodes/:id/usage
@@ -347,209 +171,204 @@ POST   /api/internal/nodes/:id/health
 
 ## 6. Services
 
-### services/gateway.js
-
-Consulta nós em paralelo, merge resultados, proxy para nó específico, seleção de nó para nova câmera. Core do multi-nó.
-
-### services/cloudflare.js
+### services/gateway.js (⏳)
 
 ```javascript
-/**
- * Cloudflare DNS API
- * Cria/deleta registros A para node-N.flactech.com.br
- */
-const CF_API = 'https://api.cloudflare.com/client/v4';
-
-export async function createNodeDNS(nodeName, ipAddress) {
-  // POST /zones/{zone}/dns_records → A record node-N.flactech.com.br → IP
-  // proxied: false (RTMP não funciona com proxy Cloudflare)
-  // Retorna cloudflare_record_id (para deletar depois)
-}
-
-export async function deleteNodeDNS(recordId) {
-  // DELETE /zones/{zone}/dns_records/{id}
-}
+// queryAllNodes(tenantId, path) → consulta nós em paralelo
+// mergeArrayResults(nodeResults) → consolida arrays JSON
+// findCameraNode(tenantId, cameraId) → qual nó tem a câmera
+// proxyToNode(node, path) → proxy request específico
+// selectNodeForCamera(tenantId) → nó com mais capacidade
 ```
 
-### services/contabo.js
+### services/cloudflare.js (⏳)
 
-Provisiona VPS 30 via Contabo API + cloud-init (Docker + repo + containers).
-
-### services/provisioning.js
-
-Orquestra: Contabo API (VPS) → Cloudflare API (DNS) → aguarda propagação → Certbot (SSL) → registra node → registra tenant_nodes.
-
-### services/stripe.js
-
-Checkout sessions, webhooks, portal, update quantity.
-
-### services/email.js
-
-Brevo SMTP + nodemailer. Templates: welcome, trial_expiring, payment_failed, invoice_paid, suspended.
-
-### services/node-health.js
-
-Monitora todos os nós a cada 60s. Alertas se offline >5 min.
-
----
-
-## 7. Dashboard do Cliente
-
-Cópia adaptada do dashboard do FlacGuard. Diferenças:
-
-| Aspecto | Dashboard do nó (atual) | Dashboard do Control (novo) |
-|---------|------------------------|---------------------------|
-| API base | localhost:8000/api | guard.flactech.com.br/api (gateway) |
-| HLS URL | Relativa `/hls/key.m3u8` | Absoluta `https://node-N.flactech.com.br/hls/key.m3u8` |
-| Playback | Relativa | Pre-signed URL do S3 (absoluta) |
-| Auth | JWT do nó | JWT do Control |
-| Câmeras | Banco local | Consolidado de N nós |
-
----
-
-## 8. Nginx (host Control)
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name guard.flactech.com.br;
-    location / { proxy_pass http://localhost:3000; }
-    location /api/ { proxy_pass http://localhost:8000; }
-}
-
-server {
-    listen 443 ssl;
-    server_name flactech.com.br www.flactech.com.br;
-    location / { proxy_pass http://localhost:3002; }
-    location /api/ { proxy_pass http://localhost:8000; }
-}
-
-server {
-    listen 443 ssl;
-    server_name app.flactech.com.br;
-    location / { proxy_pass http://localhost:3001; }
-    location /api/ { proxy_pass http://localhost:8000; }
-}
+```javascript
+// createNodeDNS(nodeName, ipAddress) → A record, retorna record_id
+// deleteNodeDNS(recordId) → remove record
 ```
 
----
+### services/contabo.js (✅ implementado, ⏳ evoluir cloud-init)
 
-## 9. Nginx (host Nó)
+Cloud-init atual faz git clone + docker compose up mas sem .env.
+Evolução: injetar .env completo + Certbot + Nginx + webhook service.
 
-```nginx
+```javascript
+function generateCloudInit(config) {
+  // config: { jwtSecret, internalApiKey, s3Keys, dbPassword, nodeName, webhookSecret }
+  return `#!/bin/bash
+apt-get update && apt-get install -y docker.io docker-compose-plugin git nginx certbot python3-certbot-nginx
+
+git clone https://github.com/andrelealpb/FlacGuard.git /opt/FlacGuard
+cd /opt/FlacGuard
+
+cat > .env << 'ENVEOF'
+JWT_SECRET=${config.jwtSecret}
+INTERNAL_API_KEY=${config.internalApiKey}
+S3_ENDPOINT=${config.s3Endpoint}
+S3_BUCKET=${config.s3Bucket}
+S3_ACCESS_KEY=${config.s3AccessKey}
+S3_SECRET_KEY=${config.s3SecretKey}
+S3_REGION=${config.s3Region}
+POSTGRES_USER=flac_guard
+POSTGRES_PASSWORD=${config.dbPassword}
+POSTGRES_DB=flac_guard
+WEBHOOK_SECRET=${config.webhookSecret}
+ENVEOF
+
+docker compose up -d --build
+sleep 15
+docker compose exec -T api node src/db/migrate.js
+
+# SSL
+certbot --nginx -d ${config.nodeName}.flactech.com.br --non-interactive --agree-tos -m leal@flactech.com.br
+
+# Nginx HTTPS
+cat > /etc/nginx/sites-available/flac-node << 'NGEOF'
 server {
     listen 443 ssl;
-    server_name node-1.flactech.com.br;
-
-    # HLS — browser acessa direto (CORS para dashboard Control)
+    server_name ${config.nodeName}.flactech.com.br;
+    ssl_certificate /etc/letsencrypt/live/${config.nodeName}.flactech.com.br/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${config.nodeName}.flactech.com.br/privkey.pem;
     location /hls/ {
         proxy_pass http://localhost:8080/hls/;
         add_header Access-Control-Allow-Origin "https://guard.flactech.com.br";
         add_header Access-Control-Allow-Methods "GET, OPTIONS";
     }
-
-    # API interna — só o Control acessa
-    location /api/internal/ {
-        proxy_pass http://localhost:8000/api/internal/;
-    }
-
-    # Tudo mais bloqueado
+    location /api/internal/ { proxy_pass http://localhost:8000/api/internal/; }
     location / { return 404; }
+}
+NGEOF
+ln -sf /etc/nginx/sites-available/flac-node /etc/nginx/sites-enabled/
+nginx -t && systemctl reload nginx
+
+# Deploy webhook
+cp /opt/FlacGuard/deploy/flac-guard-webhook.service /etc/systemd/system/
+systemctl enable --now flac-guard-webhook
+`;
 }
 ```
 
+### services/deploy.js (⏳ novo)
+
+```javascript
+/**
+ * Deploy multi-nó: recebe GitHub webhook, redistribui para todos os nós
+ */
+
+export async function deployToAllNodes(payload, signature) {
+  // 1. Validar assinatura GitHub (HMAC-SHA256)
+  // 2. Buscar todos os nós status='active'
+  // 3. Para cada nó em paralelo:
+  //    POST https://node-N.flactech.com.br:9000/deploy
+  //    headers: { 'X-Hub-Signature-256': hmac(node.webhook_secret, body) }
+  // 4. Aguardar respostas (timeout 5 min)
+  // 5. Salvar em deploy_log: node_id, commit, status, duration_ms
+  // 6. Se falhou → retry 1x
+  // 7. Retornar relatório
+}
+
+export async function deployToNode(nodeId) {
+  // Deploy manual em nó específico
+}
+
+export async function getDeployStatus() {
+  // Último deploy por nó (da tabela deploy_log)
+}
+```
+
+### Já implementados ✅
+
+- **stripe.js** (304 linhas): checkout, webhooks, portal, free tier, coupons
+- **email.js** (89 linhas): Brevo SMTP, 5 templates
+- **node-health.js** (79 linhas): monitor 60s
+- **provisioning.js** (77 linhas): selectNode + criar tenant no nó
+- **auth.js** (46 linhas): JWT admin
+
 ---
 
-## 10. Estrutura do Repositório
+## 7. Estrutura do Repositório
 
 ```
 flac-guard-control/
-├── .env.example
 ├── docker-compose.yml
-├── server/
-│   └── src/
-│       ├── index.js
-│       ├── db/ (schema, pool, migrate)
-│       ├── routes/
-│       │   ├── gateway-auth.js
-│       │   ├── gateway-cameras.js      # GET merge, POST seleciona nó
-│       │   ├── gateway-recordings.js   # Retorna URLs diretas S3
-│       │   ├── gateway-faces.js        # Search distribuído, watchlist replicada
-│       │   ├── gateway-pdvs.js
-│       │   ├── gateway-events.js
-│       │   ├── gateway-monitor.js
-│       │   ├── billing.js
-│       │   ├── plans.js
-│       │   ├── admin-*.js
-│       │   └── internal.js
-│       └── services/
-│           ├── gateway.js              # queryAllNodes, merge, proxy, findCameraNode
-│           ├── cloudflare.js           # Criar/deletar DNS A records
-│           ├── contabo.js              # Provisionar VPS
-│           ├── provisioning.js         # Orquestrar VPS + DNS + SSL
-│           ├── stripe.js
-│           ├── email.js
-│           ├── node-health.js
-│           └── auth.js
-├── client-dashboard/                   # Dashboard CLIENTE (React)
-│   └── src/pages/ (Live, Cameras, Playback, FaceSearch, Visitors, PDVs, Monitoring, Settings)
-├── admin-dashboard/                    # Dashboard ADMIN (React)
-│   └── src/pages/ (Dashboard, Tenants, Nodes, Billing)
-├── landing/                            # Site comercial
-│   ├── index.html
-│   └── pricing.html
+├── server/src/
+│   ├── index.js
+│   ├── db/ (schema.sql, pool.js, migrate.js)
+│   ├── routes/
+│   │   ├── gateway-auth.js          ⏳
+│   │   ├── gateway-cameras.js       ⏳
+│   │   ├── gateway-recordings.js    ⏳
+│   │   ├── gateway-faces.js         ⏳
+│   │   ├── gateway-pdvs.js          ⏳
+│   │   ├── gateway-events.js        ⏳
+│   │   ├── gateway-monitor.js       ⏳
+│   │   ├── admin-deploy.js          ⏳ deploy multi-nó
+│   │   ├── billing.js               ✅
+│   │   ├── admin-tenants.js         ✅
+│   │   ├── admin-nodes.js           ✅
+│   │   ├── admin-dashboard.js       ✅
+│   │   ├── admin-billing.js         ✅
+│   │   ├── admin-auth.js            ✅
+│   │   ├── internal.js              ✅
+│   │   └── plans.js                 ✅
+│   ├── services/
+│   │   ├── gateway.js               ⏳
+│   │   ├── cloudflare.js            ⏳
+│   │   ├── deploy.js                ⏳
+│   │   ├── stripe.js                ✅ (304 linhas)
+│   │   ├── contabo.js               ✅ (⏳ evoluir cloud-init)
+│   │   ├── email.js                 ✅
+│   │   ├── provisioning.js          ✅
+│   │   ├── node-health.js           ✅
+│   │   └── auth.js                  ✅
+│   └── scripts/
+│       ├── stripe-sync-plans.js     ✅
+│       └── stripe-setup-webhook.js  ✅
+├── client-dashboard/                ⏳ Dashboard CLIENTE (React)
+├── dashboard-admin/                 ✅ Dashboard ADMIN (5 páginas)
+├── landing/                         ✅ Site comercial (4 páginas)
 └── deploy/
+    ├── nginx-host.conf              ✅
+    ├── setup-ssl.sh                 ✅
+    └── ssl-hardening.conf           ✅
 ```
 
 ---
 
-## 11. Ordem de Implementação
+## 8. Nginx (Control)
 
-### Fase 1: Infra (manual, ~2h)
-- Provisionar VPS 10 (Control)
-- Criar conta Cloudflare → migrar DNS de Registro.br
-- Configurar registros DNS no Cloudflare
-- Docker, Nginx, Certbot no Control
-- Certbot no nó 1 (node-1.flactech.com.br)
+```nginx
+guard.flactech.com.br   → :3000 (client-dashboard)
+flactech.com.br         → :3002 (landing)
+app.flactech.com.br     → :3001 (admin-dashboard)
+Todos: /api/ → :8000    (API)
+```
 
-### Fase 2: Endpoints internos no nó (Claude Code, repo FlacGuard, ~3h)
-- routes/internal.js (auth X-Internal-Key)
-- Todos os endpoints proxy (cameras, recordings, faces, pdvs, events, monitor)
-- CORS para guard.flactech.com.br
-- Nginx HTTPS no host do nó
+Rate limiting: 30r/s API, 5r/m auth. Security headers. SSL hardening.
 
-### Fase 3: Control API base (Claude Code, repo flac-guard-control, ~4h)
-- Schema + migrations + seeds (planos, nó 1, tenant happydo)
-- Auth admin, CRUD plans/nodes/tenants
+---
 
-### Fase 4: Gateway multi-nó (Claude Code, ~6h)
+## 9. Ordem de Implementação
+
+### Fase 3: Control multi-nó (~4h)
+- Migration: tenant_nodes + camera_node_map + deploy_log
+- services/cloudflare.js
+- Evoluir contabo.js (cloud-init completo)
+- services/deploy.js + routes/admin-deploy.js
+- Deploy status no admin dashboard (Nodes.jsx)
+
+### Fase 4: Gateway (~6h)
 - services/gateway.js
-- Todos os gateway-*.js routes
-- Live retorna URL HTTPS do nó
-- Playback retorna pre-signed URL do S3
+- 7 routes gateway-*.js (cameras, recordings, faces, pdvs, events, monitor, auth)
 
-### Fase 5: Dashboard cliente (Claude Code, ~4h)
-- Clonar/adaptar dashboard FlacGuard
-- URLs absolutas para HLS e S3
+### Fase 5: Dashboard cliente (~4h)
+- client-dashboard/ (clonar/adaptar do nó)
+- URLs absolutas HLS/S3
 - Auth via gateway
 
-### Fase 6: Stripe (Claude Code, ~4h)
-- Products + prices + checkout + webhooks
-
-### Fase 7: Landing page (Claude Code, ~2h)
-- Site comercial + Stripe Pricing Table
-
-### Fase 8: Provisioning automático (Claude Code, ~4h)
-- services/contabo.js + cloudflare.js + provisioning.js
-- Auto-scaling (85% → provisionar)
-
-### Fase 9: Email (manual + Claude Code, ~2h)
-- Google Workspace + Brevo + DNS (MX, SPF, DKIM, DMARC no Cloudflare)
-- services/email.js + templates
-
-### Fase 10: HappyDo go-live (~3h)
-- Upgrade VPS 20 → VPS 30 (ou manter como nó 1)
-- Provisionar nós 2, 3, 4
-- Distribuir 154 câmeras
-- S3 auto-scaling cap 2.5 TB
-- Testar dashboard unificado
+### Restante
+- Fase 6: Ajustes Stripe para multi-nó (~2h)
+- Fase 7: Landing ajustes (~1h)
+- Fase 8: Email + DNS (~2h)
+- Fase 9: HappyDo go-live (~3h)
