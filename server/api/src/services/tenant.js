@@ -2,7 +2,7 @@ import { pool } from '../db/pool.js';
 
 /**
  * Extract tenant_id from the authenticated request.
- * Works with both JWT and API Key auth.
+ * Works with JWT, API Key, and gateway (X-Internal-Key) auth.
  */
 export function getTenantId(req) {
   return req.auth?.tenantId || req.auth?.user?.tenant_id || req.auth?.key?.tenant_id;
