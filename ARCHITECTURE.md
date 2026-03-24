@@ -381,15 +381,54 @@ S3 migration: batch com concurrency 5, start/pause/resume/cancel, progresso no d
 
 ---
 
-## 11. CI/CD
+## 11. CI/CD e Deploy Multi-nó
 
-### Nó
+### Nó standalone (atual, nó #1)
 
 Push GitHub (main) → webhook :9000 → deploy.sh: git pull → docker compose build → up -d → health check → deploy-status.json. Self-update detection.
 
-### Control
+### Deploy multi-nó (via Control)
+
+```
+1. Dev push GitHub (main)
+2. GitHub webhook → Control (POST /api/admin/deploy)
+3. Control:
+   a. Busca todos os nós status='active'
+   b. Para cada nó em paralelo:
+      POST https://node-N.flactech.com.br:9000/deploy
+        headers: { 'X-Hub-Signature-256': hmac(webhook_secret, body) }
+   c. Aguarda resposta (timeout 5 min)
+   d. Salva relatório: nó, status, tempo, commit
+   e. Se algum falhou → alerta admin + retry
+4. Cada nó: deploy.sh (git pull → build → up -d → health check)
+5. Admin dashboard: status do deploy por nó em tempo real
+```
+
+### Provisionamento de novo nó (cloud-init completo)
+
+O Control gera o cloud-init com todas as variáveis injetadas:
+
+```
+Cloud-init gerado pelo Control:
+  1. apt-get install docker, docker-compose, git, nginx, certbot
+  2. git clone FlacGuard /opt/FlacGuard
+  3. Gera .env com credenciais reais:
+     - JWT_SECRET (gerado)
+     - INTERNAL_API_KEY (gerado, compartilhado com Control)
+     - S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY
+     - POSTGRES_PASSWORD (gerado)
+  4. docker compose up -d --build
+  5. Aguarda DB → roda migrations
+  6. Certbot SSL para node-N.flactech.com.br
+  7. Nginx config (HTTPS: /hls/ com CORS, /api/internal/)
+  8. Instala deploy webhook service (porta 9000)
+  → Nó sobe 100% funcional sem intervenção manual
+```
+
+### Control — SSL setup
 
 SSL setup script (deploy/setup-ssl.sh) + Nginx hardening (deploy/ssl-hardening.conf).
+Rate limiting: 30r/s API, 5r/m auth.
 
 ---
 
@@ -491,6 +530,8 @@ Cobrança por câmera ativa + 1 facial grátis/PDV. Stripe per-unit.
 - [ ] **Migrar DNS para Cloudflare** (API para criar node-N.flactech.com.br automaticamente)
 - [ ] **services/cloudflare.js** no Control (criar/deletar DNS records)
 - [ ] **Dashboard cliente unificado** no Control (gateway multi-nó, vídeo direto nó/S3)
+- [ ] **Deploy multi-nó:** Control recebe GitHub webhook, redistribui para todos os nós
+- [ ] **Cloud-init completo:** .env injetado, Certbot, Nginx, webhook service
 - [ ] **tenant_nodes (N:N)** + camera_node_map no Control (multi-nó por tenant)
 - [ ] **HTTPS nos nós** (Certbot node-N.flactech.com.br, CORS guard.flactech.com.br)
 - [ ] Remover dashboard do docker-compose do nó (após dashboard cliente no Control)
