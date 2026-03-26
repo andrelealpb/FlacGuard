@@ -1358,6 +1358,11 @@ function Playback() {
                     )}
                   </div>
                   <div style={{ display: "flex", gap: "0.3rem", alignItems: "center" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: "0.2rem", fontSize: "0.65rem", color: "#666", cursor: "pointer" }}>
+                      <input type="checkbox" checked={searchPdvOnly} onChange={(e) => setSearchPdvOnly(e.target.checked)}
+                        style={{ width: 12, height: 12, cursor: "pointer" }} />
+                      Apenas este PDV
+                    </label>
                     {autoCrossRefOn && autoCrossRef.length > 0 && (
                       <button
                         onClick={() => { setAutoCrossRef([]); searchedEmbeddings.current.clear(); }}
