@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { authenticate } from '../services/auth.js';
-import { fetchAllStores, isPulseConfigured } from '../services/pulse.js';
+import { syncPdvsFromControl } from '../services/control-sync.js';
 import { getVisitorsByPdv } from '../services/face-recognition.js';
 import { getTenantId } from '../services/tenant.js';
 
@@ -11,6 +11,10 @@ const router = Router();
 router.get('/', authenticate, async (req, res) => {
   try {
     const tenantId = getTenantId(req);
+
+    // Sync from Control (non-blocking — don't wait for result)
+    syncPdvsFromControl(tenantId).catch(() => {});
+
     const { rows } = await pool.query(
       `SELECT p.*,
          COUNT(c.id) as camera_count,
@@ -27,96 +31,6 @@ router.get('/', authenticate, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-// POST /api/pdvs/sync — Sync PDVs from HappyDoPulse API
-router.post('/sync', authenticate, async (req, res) => {
-  try {
-    const tenantId = getTenantId(req);
-    if (!(await isPulseConfigured())) {
-      return res.status(400).json({
-        error: 'Pulse credentials not configured. Set PULSE_EMAIL and PULSE_PASSWORD.',
-      });
-    }
-
-    const stores = await fetchAllStores();
-    let created = 0;
-    let updated = 0;
-
-    for (const store of stores) {
-      const { rows } = await pool.query(
-        'SELECT id FROM pdvs WHERE pulse_id = $1 AND tenant_id = $2',
-        [store.id, tenantId]
-      );
-
-      if (rows.length === 0) {
-        // Insert new PDV
-        await pool.query(
-          `INSERT INTO pdvs (pulse_id, code, name, address, bairro, city, state, cep, bandeira, latitude, longitude, is_active, pulse_synced_at, tenant_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), $13)`,
-          [
-            store.id,
-            store.code,
-            store.name,
-            store.address || '',
-            store.bairro,
-            store.cidade || 'João Pessoa',
-            store.estado || 'PB',
-            store.cep,
-            store.bandeira,
-            store.latitude ? parseFloat(store.latitude) : null,
-            store.longitude ? parseFloat(store.longitude) : null,
-            store.active,
-            tenantId,
-          ]
-        );
-        created++;
-      } else {
-        // Update existing PDV
-        await pool.query(
-          `UPDATE pdvs SET
-             code = $2, name = $3, address = $4, bairro = $5,
-             city = $6, state = $7, cep = $8, bandeira = $9,
-             latitude = $10, longitude = $11, is_active = $12,
-             pulse_synced_at = now(), updated_at = now()
-           WHERE pulse_id = $1 AND tenant_id = $13`,
-          [
-            store.id,
-            store.code,
-            store.name,
-            store.address || '',
-            store.bairro,
-            store.cidade || 'João Pessoa',
-            store.estado || 'PB',
-            store.cep,
-            store.bandeira,
-            store.latitude ? parseFloat(store.latitude) : null,
-            store.longitude ? parseFloat(store.longitude) : null,
-            store.active,
-            tenantId,
-          ]
-        );
-        updated++;
-      }
-    }
-
-    res.json({
-      message: 'Sync completed',
-      total_from_pulse: stores.length,
-      created,
-      updated,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/pdvs/pulse-status — Check Pulse integration status
-router.get('/pulse-status', authenticate, async (_req, res) => {
-  res.json({
-    configured: await isPulseConfigured(),
-    api_url: process.env.PULSE_API_URL || 'https://happydopulse-production.up.railway.app/api',
-  });
 });
 
 // POST /api/pdvs

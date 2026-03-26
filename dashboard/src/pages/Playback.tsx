@@ -278,7 +278,7 @@ function VideoPlayer({
     const ts = `${dateStr}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}${tzSuffix}`;
 
     const results: SimultaneousVideo[] = [];
-    const toCheck = siblingCameras.slice(0, 4);
+    const toCheck = siblingCameras.slice(0, 3);
     await Promise.all(
       toCheck.map(async (cam) => {
         try {
