@@ -23,9 +23,10 @@ services:
       - RTMP_HOST=nginx-rtmp
       - HLS_BASE_URL=http://nginx-rtmp:8080/hls
       - PORT=8000
-      - PULSE_API_URL=${PULSE_API_URL:-https://happydopulse-production.up.railway.app/api}
-      - PULSE_EMAIL=${PULSE_EMAIL:-}
-      - PULSE_PASSWORD=${PULSE_PASSWORD:-}
+      - CONTROL_API_URL=${CONTROL_API_URL:-}
+      - CONTROL_NODE_API_KEY=${CONTROL_NODE_API_KEY:-}
+      - CONTROL_TENANT_ID=${CONTROL_TENANT_ID:-}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY:-}
       - FACE_SERVICE_URL=http://face-service:8001
       - S3_ENDPOINT=${S3_ENDPOINT:-}
       - S3_BUCKET=${S3_BUCKET:-}

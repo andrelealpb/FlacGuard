@@ -2,16 +2,20 @@ import { pool } from '../db/pool.js';
 
 const CONTROL_API_URL = process.env.CONTROL_API_URL;
 const CONTROL_NODE_API_KEY = process.env.CONTROL_NODE_API_KEY;
+const CONTROL_TENANT_ID = process.env.CONTROL_TENANT_ID;
 
 /**
  * Sync PDVs from flac-guard-control for a given tenant.
+ * Uses CONTROL_TENANT_ID to query the Control API, but saves with the local tenantId.
  * Non-blocking: caller should .catch(() => {}) to avoid unhandled rejections.
  */
 export async function syncPdvsFromControl(tenantId) {
   if (!CONTROL_API_URL || !CONTROL_NODE_API_KEY) return { synced: 0 };
 
+  const queryTenantId = CONTROL_TENANT_ID || tenantId;
+
   try {
-    const res = await fetch(`${CONTROL_API_URL}/api/internal/tenants/${tenantId}/pdvs`, {
+    const res = await fetch(`${CONTROL_API_URL}/api/internal/tenants/${queryTenantId}/pdvs`, {
       headers: { 'X-API-Key': CONTROL_NODE_API_KEY },
       signal: AbortSignal.timeout(10000),
     });
