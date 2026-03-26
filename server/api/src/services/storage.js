@@ -143,8 +143,9 @@ export async function uploadWatchlistPhoto(localPath, tenantId, watchlistId) {
 /**
  * Generate a pre-signed URL for reading an S3 object.
  * Default expiry: 1 hour.
+ * Optional overrides: { ResponseContentDisposition, ResponseContentType, ... }
  */
-export async function getPresignedUrl(s3Key, expiresIn = 3600) {
+export async function getPresignedUrl(s3Key, expiresIn = 3600, overrides = {}) {
   const client = getClient();
   if (!client || !s3Key) return null;
 
@@ -152,6 +153,7 @@ export async function getPresignedUrl(s3Key, expiresIn = 3600) {
     const command = new GetObjectCommand({
       Bucket: S3_BUCKET,
       Key: s3Key,
+      ...overrides,
     });
     return await getSignedUrl(client, command, { expiresIn });
   } catch (err) {

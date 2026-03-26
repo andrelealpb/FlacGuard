@@ -109,7 +109,12 @@ router.get('/:id/stream', authenticate, async (req, res) => {
 
     // If stored in S3, redirect to pre-signed URL
     if (rows[0].s3_key) {
-      const url = await getPresignedUrl(rows[0].s3_key, 3600);
+      const isDownload = req.query.download === '1';
+      const filename = req.query.filename || `recording-${req.params.id}.mp4`;
+      const overrides = isDownload
+        ? { ResponseContentDisposition: `attachment; filename="${filename}"` }
+        : {};
+      const url = await getPresignedUrl(rows[0].s3_key, 3600, overrides);
       if (url) return res.redirect(302, url);
       // Fallback to local if presigned URL fails
     }
