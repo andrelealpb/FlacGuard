@@ -755,7 +755,7 @@ function Cameras() {
                   style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", border: "1px solid #ccc" }}
                 >
                   <option value="">Selecione o PDV...</option>
-                  {pdvs.map((p) => (
+                  {pdvs.filter((p) => p.is_active).map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.code ? `[${p.code}] ` : ""}{p.name} — {p.city}/{p.state}
                     </option>
