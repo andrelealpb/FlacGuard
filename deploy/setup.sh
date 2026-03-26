@@ -5,6 +5,37 @@ echo "=== Flac Guard - Deploy Webhook Setup ==="
 
 DEPLOY_DIR="/opt/FlacGuard"
 
+# --- Git authentication for private repository ---
+# Required: a GitHub Personal Access Token (PAT) with Contents:Read permission.
+# Generate at: https://github.com/settings/personal-access-tokens/new
+#   - Repository: andrelealpb/FlacGuard (only)
+#   - Permissions: Contents → Read-only
+CURRENT_URL=$(git -C "$DEPLOY_DIR" remote get-url origin 2>/dev/null || echo "")
+
+if echo "$CURRENT_URL" | grep -qE '^https?://[^@]*github\.com'; then
+  # Remote URL has no token embedded — prompt to configure
+  echo ""
+  echo "⚠  O repositório é privado. O deploy precisa de um GitHub PAT para fazer git fetch."
+  echo ""
+  read -rp "Cole seu GitHub Personal Access Token (ou Enter para pular): " GH_TOKEN
+  if [ -n "$GH_TOKEN" ]; then
+    git -C "$DEPLOY_DIR" remote set-url origin "https://${GH_TOKEN}@github.com/andrelealpb/FlacGuard.git"
+    echo "✓ Remote atualizado com token."
+    # Verify connectivity
+    if git -C "$DEPLOY_DIR" fetch origin --dry-run 2>/dev/null; then
+      echo "✓ Conexão com GitHub OK."
+    else
+      echo "✗ Falha ao conectar. Verifique o token e tente novamente."
+    fi
+  else
+    echo "Pulando... Configure manualmente depois:"
+    echo "  git -C $DEPLOY_DIR remote set-url origin https://TOKEN@github.com/andrelealpb/FlacGuard.git"
+  fi
+  echo ""
+elif echo "$CURRENT_URL" | grep -qE 'github\.com'; then
+  echo "✓ Git remote já configurado com autenticação."
+fi
+
 # Generate webhook secret if not set
 if ! grep -q WEBHOOK_SECRET "$DEPLOY_DIR/.env" 2>/dev/null; then
   SECRET=$(openssl rand -hex 32)
@@ -50,4 +81,9 @@ echo "  Testar deploy manual: curl -X POST http://localhost:9000/deploy"
 echo "  Ver status:           curl http://localhost:9000/status"
 echo "  Ver logs:             curl http://localhost:9000/logs"
 echo "  Logs do systemd:      journalctl -u flac-guard-webhook -f"
+echo ""
+echo "=== Git (repo privado) ==="
+echo "  Verificar remote:     git -C $DEPLOY_DIR remote get-url origin"
+echo "  Testar conexão:       git -C $DEPLOY_DIR fetch origin --dry-run"
+echo "  Atualizar token:      git -C $DEPLOY_DIR remote set-url origin https://TOKEN@github.com/andrelealpb/FlacGuard.git"
 echo ""
