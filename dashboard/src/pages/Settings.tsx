@@ -1,12 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../context/AuthContext";
 
-interface PulseConfig {
-  api_url: string;
-  email: string;
-  has_password: boolean;
-}
-
 interface BuildServiceInfo {
   name: string;
   build_status: string;
@@ -54,12 +48,7 @@ function Settings() {
   const { apiFetch, user } = useAuth();
   const isAdmin = user?.role === "admin";
 
-  const [pulse, setPulse] = useState<PulseConfig | null>(null);
   const [deploy, setDeploy] = useState<DeployStatus | null>(null);
-  const [form, setForm] = useState({ api_url: "", email: "", password: "" });
-  const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
 
   // Server/RTMP config
   const [serverForm, setServerForm] = useState({ rtmp_public_host: "", rtmp_public_port: "1935" });
@@ -116,56 +105,7 @@ function Settings() {
         setServerForm({ rtmp_public_host: data.rtmp_public_host || "", rtmp_public_port: data.rtmp_public_port || "1935" });
       })
       .catch(console.error);
-    apiFetch("/api/settings/pulse")
-      .then((r) => r.json())
-      .then((data) => {
-        setPulse(data);
-        setForm({ api_url: data.api_url, email: data.email, password: "" });
-      })
-      .catch(console.error);
   }, []);
-
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    setMessage(null);
-    try {
-      const body: Record<string, string> = { api_url: form.api_url, email: form.email };
-      if (form.password) body.password = form.password;
-
-      const res = await apiFetch("/api/settings/pulse", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setMessage({ type: "ok", text: data.message });
-        setPulse((prev) => prev ? { ...prev, email: form.email, api_url: form.api_url, has_password: form.password ? true : prev.has_password } : prev);
-        setForm((f) => ({ ...f, password: "" }));
-      } else {
-        setMessage({ type: "error", text: data.error });
-      }
-    } catch {
-      setMessage({ type: "error", text: "Erro de conexão" });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleTest = async () => {
-    setTesting(true);
-    setMessage(null);
-    try {
-      const res = await apiFetch("/api/settings/pulse/test", { method: "POST" });
-      const data = await res.json();
-      setMessage({ type: data.ok ? "ok" : "error", text: data.message });
-    } catch {
-      setMessage({ type: "error", text: "Erro de conexão" });
-    } finally {
-      setTesting(false);
-    }
-  };
 
   const handleSaveServer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -234,90 +174,6 @@ function Settings() {
   return (
     <div>
       <h2 style={{ marginTop: 0 }}>Configurações</h2>
-
-      {/* Pulse Integration */}
-      {isAdmin && (
-        <div style={cardStyle}>
-          <h3 style={{ marginTop: 0 }}>Integração HappyDo Pulse</h3>
-          <p style={{ fontSize: "0.8rem", color: "#666", marginTop: 0 }}>
-            Configure as credenciais para sincronizar os PDVs automaticamente do HappyDo Pulse.
-          </p>
-
-          {message && (
-            <div
-              style={{
-                padding: "0.6rem 1rem",
-                marginBottom: "1rem",
-                borderRadius: "6px",
-                fontSize: "0.85rem",
-                background: message.type === "ok" ? "#e8f5e9" : "#ffebee",
-                color: message.type === "ok" ? "#2e7d32" : "#c62828",
-              }}
-            >
-              {message.text}
-            </div>
-          )}
-
-          <form onSubmit={handleSave}>
-            <div style={{ display: "grid", gap: "0.75rem" }}>
-              <div>
-                <label style={labelStyle}>URL da API</label>
-                <input
-                  type="url"
-                  value={form.api_url}
-                  onChange={(e) => setForm({ ...form, api_url: e.target.value })}
-                  placeholder="https://happydopulse-production.up.railway.app/api"
-                  style={inputStyle}
-                />
-              </div>
-
-              <div>
-                <label style={labelStyle}>Email</label>
-                <input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  placeholder="usuario@empresa.com"
-                  required
-                  style={inputStyle}
-                />
-              </div>
-
-              <div>
-                <label style={labelStyle}>
-                  Senha
-                  {pulse?.has_password && (
-                    <span style={{ fontWeight: 400, color: "#666", marginLeft: "0.5rem" }}>
-                      (já configurada — deixe em branco para manter)
-                    </span>
-                  )}
-                </label>
-                <input
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  placeholder={pulse?.has_password ? "••••••••" : "Senha do Pulse"}
-                  style={inputStyle}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
-              <button type="submit" disabled={saving} style={btnPrimary}>
-                {saving ? "Salvando..." : "Salvar"}
-              </button>
-              <button
-                type="button"
-                onClick={handleTest}
-                disabled={testing}
-                style={btnStyle}
-              >
-                {testing ? "Testando..." : "Testar Conexão"}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
 
       {/* Deploy Status */}
       <div style={cardStyle}>

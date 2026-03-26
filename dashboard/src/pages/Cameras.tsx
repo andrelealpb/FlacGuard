@@ -521,8 +521,6 @@ function Cameras() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [filterPdv, setFilterPdv] = useState("");
-  const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState("");
   const [infoCamera, setInfoCamera] = useState<Camera | null>(null);
   const [diskUsage, setDiskUsage] = useState<DiskUsageMap>({});
 
@@ -555,26 +553,7 @@ function Cameras() {
 
   useEffect(loadData, []);
 
-  const handleSync = async () => {
-    setSyncing(true);
-    setSyncResult("");
-    try {
-      const res = await apiFetch("/api/pdvs/sync", { method: "POST" });
-      const data = await res.json();
-      if (res.ok) {
-        setSyncResult(
-          `Sincronizado: ${data.created} novos, ${data.updated} atualizados (${data.total_from_pulse} do Pulse)`
-        );
-        loadData();
-      } else {
-        setSyncResult(`Erro: ${data.error}`);
-      }
-    } catch (err) {
-      setSyncResult("Erro de conexão ao sincronizar");
-    } finally {
-      setSyncing(false);
-    }
-  };
+  // PDV sync is now automatic via flac-guard-control (non-blocking on GET /api/pdvs)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -713,9 +692,6 @@ function Cameras() {
           Câmeras ({cameras.length})
         </h2>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-          <button onClick={handleSync} disabled={syncing} style={btnStyle}>
-            {syncing ? "Sincronizando..." : "Sincronizar PDVs do Pulse"}
-          </button>
           <button
             onClick={() => { setShowForm(true); setEditingId(null); setForm(emptyForm); setError(""); }}
             style={btnPrimary}
@@ -725,18 +701,6 @@ function Cameras() {
         </div>
       </div>
 
-      {syncResult && (
-        <div style={{
-          padding: "0.75rem 1rem",
-          marginBottom: "1rem",
-          borderRadius: "6px",
-          background: syncResult.startsWith("Erro") ? "#ffebee" : "#e8f5e9",
-          color: syncResult.startsWith("Erro") ? "#c62828" : "#2e7d32",
-          fontSize: "0.875rem",
-        }}>
-          {syncResult}
-        </div>
-      )}
 
       {/* System Alerts */}
       <AlertsBox apiFetch={apiFetch} />
@@ -799,7 +763,7 @@ function Cameras() {
                 </select>
                 {pdvs.length === 0 && (
                   <div style={{ fontSize: "0.75rem", color: "#e65100", marginTop: "0.25rem" }}>
-                    Nenhum PDV cadastrado. Sincronize com o Pulse primeiro.
+                    Nenhum PDV cadastrado. Os PDVs são sincronizados automaticamente do Control.
                   </div>
                 )}
               </div>
