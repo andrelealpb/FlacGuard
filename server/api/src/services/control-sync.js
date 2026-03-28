@@ -11,6 +11,7 @@ const CONTROL_TENANT_ID = process.env.CONTROL_TENANT_ID;
  * Matching strategy: match by name (case-insensitive) + tenant_id.
  * - If a local PDV with the same name exists, update its fields (keep local ID to preserve camera links).
  * - If no match, insert with the Control's ID.
+ * - Local PDVs not found in Control are deactivated (is_active = false).
  *
  * Non-blocking: caller should .catch(() => {}) to avoid unhandled rejections.
  */
@@ -29,17 +30,23 @@ export async function syncPdvsFromControl(tenantId) {
     const pdvs = await res.json();
     let synced = 0;
     let created = 0;
+    let deactivated = 0;
+
+    // Collect names from Control (uppercase for comparison)
+    const controlNames = new Set(pdvs.map((p) => p.name.toUpperCase()));
+
+    // Track local IDs that were matched/created
+    const matchedLocalIds = new Set();
 
     for (const pdv of pdvs) {
       try {
-        // Try to find existing PDV by name (case-insensitive) within the same tenant
         const { rows: existing } = await pool.query(
           'SELECT id FROM pdvs WHERE UPPER(name) = UPPER($1) AND tenant_id = $2 LIMIT 1',
           [pdv.name, tenantId]
         );
 
         if (existing.length > 0) {
-          // Update existing PDV (keep local ID to preserve camera/recording links)
+          matchedLocalIds.add(existing[0].id);
           await pool.query(
             `UPDATE pdvs SET
                address = $2, bairro = $3, city = $4, state = $5,
@@ -50,17 +57,18 @@ export async function syncPdvsFromControl(tenantId) {
              pdv.bandeira || '', pdv.code || '', pdv.is_active]
           );
         } else {
-          // Insert new PDV with Control's ID
-          await pool.query(
+          const { rows: inserted } = await pool.query(
             `INSERT INTO pdvs (id, tenant_id, name, address, bairro, city, state, cep, bandeira, code, is_active)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (id) DO UPDATE SET
                name = $3, address = $4, bairro = $5, city = $6, state = $7,
-               cep = $8, bandeira = $9, is_active = $11, updated_at = now()`,
+               cep = $8, bandeira = $9, is_active = $11, updated_at = now()
+             RETURNING id`,
             [pdv.id, tenantId, pdv.name, pdv.address || '', pdv.bairro || '',
              pdv.city || '', pdv.state || '', pdv.cep || '', pdv.bandeira || '',
              pdv.code || '', pdv.is_active]
           );
+          if (inserted.length > 0) matchedLocalIds.add(inserted[0].id);
           created++;
         }
         synced++;
@@ -69,11 +77,27 @@ export async function syncPdvsFromControl(tenantId) {
       }
     }
 
-    if (synced > 0) {
-      console.log(`[Control-Sync] Synced ${synced} PDVs (${created} new) from Control`);
+    // Deactivate local PDVs that no longer exist in Control
+    const { rows: localPdvs } = await pool.query(
+      'SELECT id, name FROM pdvs WHERE tenant_id = $1 AND is_active = true',
+      [tenantId]
+    );
+
+    for (const local of localPdvs) {
+      if (!matchedLocalIds.has(local.id) && !controlNames.has(local.name.toUpperCase())) {
+        await pool.query(
+          'UPDATE pdvs SET is_active = false, updated_at = now() WHERE id = $1',
+          [local.id]
+        );
+        deactivated++;
+      }
     }
 
-    return { synced, created };
+    if (synced > 0 || deactivated > 0) {
+      console.log(`[Control-Sync] Synced ${synced} PDVs (${created} new, ${deactivated} deactivated) from Control`);
+    }
+
+    return { synced, created, deactivated };
   } catch (err) {
     console.error('[Control-Sync] Sync failed:', err.message);
     return { synced: 0 };
