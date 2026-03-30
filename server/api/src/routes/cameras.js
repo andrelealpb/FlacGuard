@@ -8,8 +8,6 @@ import { getTenantId, getTenantSlug } from '../services/tenant.js';
 
 const router = Router();
 
-const VALID_MODELS = ['iM3 C', 'iM5 SC', 'iMX', 'IC3', 'IC5'];
-
 // Derive camera_group from model
 function groupFromModel(model) {
   return ['IC3', 'IC5'].includes(model) ? 'ic' : 'im';
@@ -62,20 +60,22 @@ router.get('/', authenticate, async (req, res) => {
   }
 });
 
-// GET /api/cameras/models — List valid camera models
-router.get('/models', authenticate, (_req, res) => {
-  res.json(VALID_MODELS.map(m => ({
-    model: m,
-    group: groupFromModel(m),
-    has_rtmp: !['IC3', 'IC5'].includes(m),
-    description: {
-      'iM3 C': 'Intelbras iM3 C — RTMP nativo',
-      'iM5 SC': 'Intelbras iM5 SC — RTMP nativo (validado)',
-      'iMX': 'Intelbras iMX — RTMP nativo',
-      'IC3': 'Intelbras IC3 — legada, requer Pi Zero (RTSP→RTMP)',
-      'IC5': 'Intelbras IC5 — legada, requer Pi Zero (RTSP→RTMP)',
-    }[m],
-  })));
+// GET /api/cameras/models — List camera models in use on this node
+router.get('/models', authenticate, async (req, res) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { rows } = await pool.query(
+      'SELECT DISTINCT model FROM cameras WHERE tenant_id = $1 ORDER BY model',
+      [tenantId]
+    );
+    res.json(rows.map((r) => ({
+      model: r.model,
+      group: groupFromModel(r.model),
+      has_rtmp: groupFromModel(r.model) === 'im',
+    })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /api/cameras/stream-names — Map stream keys to camera names (for RTMP stats)
@@ -204,9 +204,6 @@ router.post('/', authenticate, async (req, res) => {
     if (!name || !pdv_id || !model) {
       return res.status(400).json({ error: 'name, pdv_id and model are required' });
     }
-    if (!VALID_MODELS.includes(model)) {
-      return res.status(400).json({ error: `Invalid model. Must be one of: ${VALID_MODELS.join(', ')}` });
-    }
     if (recording_mode && !['continuous', 'motion'].includes(recording_mode)) {
       return res.status(400).json({ error: 'recording_mode must be "continuous" or "motion"' });
     }
@@ -288,9 +285,6 @@ router.patch('/:id', authenticate, async (req, res) => {
   try {
     const { name, model, location_description, pdv_id, recording_mode, retention_days, motion_sensitivity, storage_quota_gb, camera_purpose, capture_face } = req.body;
 
-    if (model && !VALID_MODELS.includes(model)) {
-      return res.status(400).json({ error: `Invalid model. Must be one of: ${VALID_MODELS.join(', ')}` });
-    }
     const tenantId = getTenantId(req);
     if (pdv_id) {
       const pdvCheck = await pool.query('SELECT id FROM pdvs WHERE id = $1 AND tenant_id = $2', [pdv_id, tenantId]);
