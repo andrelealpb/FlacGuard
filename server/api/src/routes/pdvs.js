@@ -33,6 +33,74 @@ router.get('/', authenticate, async (req, res) => {
   }
 });
 
+// POST /api/pdvs/sync — Bulk sync from Control (push-based)
+router.post('/sync', authenticate, async (req, res) => {
+  try {
+    const { stores } = req.body;
+    if (!Array.isArray(stores)) {
+      return res.status(400).json({ error: 'stores array required' });
+    }
+
+    const tenantId = getTenantId(req);
+    let created = 0;
+    let updated = 0;
+    const syncedNames = new Set();
+
+    for (const store of stores) {
+      if (!store.name) continue;
+      syncedNames.add(store.name.toUpperCase());
+
+      const { rows: existing } = await pool.query(
+        'SELECT id FROM pdvs WHERE UPPER(name) = UPPER($1) AND tenant_id = $2 LIMIT 1',
+        [store.name, tenantId]
+      );
+
+      if (existing.length === 0) {
+        await pool.query(
+          `INSERT INTO pdvs (tenant_id, name, address, bairro, city, state, cep, bandeira, code, is_active)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          [tenantId, store.name, store.address || '', store.bairro || '',
+           store.city || '', store.state || '', store.cep || '',
+           store.bandeira || '', store.code || '', store.active !== false]
+        );
+        created++;
+      } else {
+        await pool.query(
+          `UPDATE pdvs SET
+             address = COALESCE($2, address), bairro = COALESCE($3, bairro),
+             city = COALESCE($4, city), state = COALESCE($5, state),
+             cep = COALESCE($6, cep), bandeira = COALESCE($7, bandeira),
+             code = COALESCE($8, code), is_active = COALESCE($9, is_active), updated_at = now()
+           WHERE id = $1`,
+          [existing[0].id, store.address, store.bairro, store.city,
+           store.state, store.cep, store.bandeira, store.code, store.active]
+        );
+        updated++;
+      }
+    }
+
+    // Deactivate PDVs not in the sync payload
+    const { rows: localPdvs } = await pool.query(
+      'SELECT id, name FROM pdvs WHERE tenant_id = $1 AND is_active = true',
+      [tenantId]
+    );
+    let deactivated = 0;
+    for (const local of localPdvs) {
+      if (!syncedNames.has(local.name.toUpperCase())) {
+        await pool.query(
+          'UPDATE pdvs SET is_active = false, updated_at = now() WHERE id = $1',
+          [local.id]
+        );
+        deactivated++;
+      }
+    }
+
+    res.json({ message: 'Sync completed', total: stores.length, created, updated, deactivated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/pdvs
 router.post('/', authenticate, async (req, res) => {
   try {
