@@ -7,6 +7,7 @@ interface PDV {
   code: string | null;
   city: string;
   state: string;
+  is_active: boolean;
 }
 
 interface Camera {
