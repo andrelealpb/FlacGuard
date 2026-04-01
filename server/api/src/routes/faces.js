@@ -11,7 +11,7 @@ import {
 import { writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getTenantId } from '../services/tenant.js';
-import { uploadWatchlistPhoto, getPresignedUrl } from '../services/storage.js';
+import { uploadWatchlistPhoto, getPresignedUrl, deleteObject } from '../services/storage.js';
 
 const router = Router();
 const WATCHLIST_DIR = '/data/recordings/watchlist';
@@ -981,6 +981,197 @@ router.post('/reimport', authenticate, authorize('admin'), async (_req, res) => 
 router.get('/reimport/status', authenticate, async (_req, res) => {
   const { rows } = await pool.query('SELECT count(*) AS total FROM face_embeddings');
   res.json({ running: reimportRunning, total_embeddings: parseInt(rows[0].total, 10), progress: reimportProgress });
+});
+
+// POST /api/faces/cleanup-quality — Remove low-quality embeddings (back-of-head, top-of-head, tiny faces)
+// Re-evaluates each crop via face-service quality_score, deletes those below threshold.
+// Designed for large databases (150k+): paginated queries, batch deletes, throttled processing.
+const MIN_QUALITY_SCORE = 0.45;
+const CLEANUP_BATCH_SIZE = 500;       // DB rows fetched per page
+const CLEANUP_CONCURRENCY = 3;        // parallel face-service requests
+const CLEANUP_PAUSE_EVERY = 100;      // pause every N items to let CPU breathe
+const CLEANUP_PAUSE_MS = 500;         // pause duration in ms
+
+let cleanupRunning = false;
+let cleanupProgress = { checked: 0, deleted: 0, kept: 0, orphans: 0, errors: 0, total: 0, done: false };
+
+router.post('/cleanup-quality', authenticate, authorize('admin'), async (_req, res) => {
+  if (cleanupRunning) {
+    return res.status(409).json({ error: 'Limpeza de qualidade já está em andamento' });
+  }
+  cleanupRunning = true;
+
+  try {
+    const { rows: [{ count: totalStr }] } = await pool.query(
+      'SELECT count(*) AS count FROM face_embeddings WHERE face_image IS NOT NULL'
+    );
+    const total = parseInt(totalStr, 10);
+
+    if (total === 0) {
+      cleanupRunning = false;
+      return res.json({ message: 'Nenhuma embedding com crop encontrada', deleted: 0 });
+    }
+
+    res.json({
+      message: `Limpeza de qualidade iniciada para ${total} embeddings. Acompanhe via GET /api/faces/cleanup-quality/status.`,
+      total,
+    });
+
+    let checked = 0, deleted = 0, kept = 0, orphans = 0, errors = 0;
+    cleanupProgress = { checked: 0, deleted: 0, kept: 0, orphans: 0, errors: 0, total, done: false };
+    console.log(`[cleanup-quality] Starting quality check for ${total} embeddings (batch=${CLEANUP_BATCH_SIZE}, concurrency=${CLEANUP_CONCURRENCY})...`);
+
+    const affectedCameras = new Set();
+    let lastId = '00000000-0000-0000-0000-000000000000';
+
+    // Paginated cursor loop — avoids loading 150k+ rows into memory
+    while (true) {
+      const { rows: batch } = await pool.query(
+        `SELECT id, face_image, face_image_s3_key, camera_id
+         FROM face_embeddings
+         WHERE face_image IS NOT NULL AND id > $1
+         ORDER BY id
+         LIMIT $2`,
+        [lastId, CLEANUP_BATCH_SIZE]
+      );
+
+      if (batch.length === 0) break;
+      lastId = batch[batch.length - 1].id;
+
+      // Process batch with limited concurrency
+      for (let i = 0; i < batch.length; i += CLEANUP_CONCURRENCY) {
+        const chunk = batch.slice(i, i + CLEANUP_CONCURRENCY);
+
+        const results = await Promise.allSettled(chunk.map(async (emb) => {
+          // Orphan: no file on disk
+          if (!emb.face_image || !existsSync(emb.face_image)) {
+            if (emb.face_image_s3_key) {
+              try { await deleteObject(emb.face_image_s3_key); } catch { /* ok */ }
+            }
+            return { id: emb.id, action: 'orphan', cameraId: emb.camera_id };
+          }
+
+          // Send crop to face-service for quality evaluation
+          const jpegBuffer = readFileSync(emb.face_image);
+          const formData = new FormData();
+          formData.append('file', new Blob([jpegBuffer], { type: 'image/jpeg' }), 'photo.jpg');
+
+          const embedRes = await fetch(`${FACE_SERVICE_URL}/embed`, {
+            method: 'POST',
+            body: formData,
+            signal: AbortSignal.timeout(10000),
+          });
+
+          let qualityScore = 0;
+          if (embedRes.ok) {
+            const data = await embedRes.json();
+            qualityScore = data.quality_score ?? data.confidence ?? 0;
+          }
+
+          if (qualityScore < MIN_QUALITY_SCORE) {
+            try { unlinkSync(emb.face_image); } catch { /* ok */ }
+            if (emb.face_image_s3_key) {
+              try { await deleteObject(emb.face_image_s3_key); } catch { /* ok */ }
+            }
+            return { id: emb.id, action: 'delete', cameraId: emb.camera_id };
+          }
+
+          return { id: emb.id, action: 'keep', quality: qualityScore };
+        }));
+
+        // Collect IDs for batch DB operations
+        const toDelete = [];
+        const toUpdate = [];
+
+        for (const result of results) {
+          checked++;
+          if (result.status === 'rejected') {
+            errors++;
+            if (errors <= 10) console.error(`[cleanup-quality] Error:`, result.reason?.message);
+            continue;
+          }
+          const { id, action, cameraId, quality } = result.value;
+          if (action === 'orphan') {
+            toDelete.push(id);
+            orphans++;
+            affectedCameras.add(cameraId);
+          } else if (action === 'delete') {
+            toDelete.push(id);
+            deleted++;
+            affectedCameras.add(cameraId);
+          } else {
+            toUpdate.push({ id, quality });
+            kept++;
+          }
+        }
+
+        // Batch DELETE
+        if (toDelete.length > 0) {
+          await pool.query(
+            'DELETE FROM face_embeddings WHERE id = ANY($1)',
+            [toDelete]
+          );
+        }
+
+        // Batch UPDATE quality scores for kept embeddings
+        for (const { id, quality } of toUpdate) {
+          await pool.query(
+            'UPDATE face_embeddings SET confidence = $1 WHERE id = $2',
+            [quality, id]
+          );
+        }
+
+        cleanupProgress = { checked, deleted, kept, orphans, errors, total, done: false };
+
+        // Throttle: pause periodically to avoid starving the CPU
+        if (checked % CLEANUP_PAUSE_EVERY === 0) {
+          console.log(`[cleanup-quality] Progress: ${checked}/${total} (${(checked/total*100).toFixed(1)}%) — ${deleted} deleted, ${orphans} orphans, ${kept} kept, ${errors} errors`);
+          await new Promise(r => setTimeout(r, CLEANUP_PAUSE_MS));
+        }
+      }
+    }
+
+    // Recompute daily_visitors for affected cameras
+    if (affectedCameras.size > 0) {
+      console.log(`[cleanup-quality] Recomputing daily_visitors for ${affectedCameras.size} affected cameras...`);
+      for (const cameraId of affectedCameras) {
+        try {
+          const { rows: dates } = await pool.query(
+            'SELECT DISTINCT detected_at::date AS d FROM face_embeddings WHERE camera_id = $1',
+            [cameraId]
+          );
+          for (const { d } of dates) {
+            await countDistinctVisitors(cameraId, d);
+          }
+        } catch (err) {
+          console.error(`[cleanup-quality] Error recomputing visitors for camera ${cameraId}:`, err.message);
+        }
+      }
+      await pool.query(
+        `DELETE FROM daily_visitors dv
+         WHERE NOT EXISTS (
+           SELECT 1 FROM face_embeddings fe
+           WHERE fe.camera_id = dv.camera_id
+             AND fe.detected_at::date = dv.visit_date
+         )`
+      );
+      console.log(`[cleanup-quality] Daily visitors recomputed.`);
+    }
+
+    cleanupProgress = { checked, deleted, kept, orphans, errors, total, done: true };
+    console.log(`[cleanup-quality] Complete: ${deleted} deleted, ${orphans} orphans removed, ${kept} kept, ${errors} errors out of ${total} embeddings`);
+    cleanupRunning = false;
+  } catch (err) {
+    console.error('[cleanup-quality] Fatal error:', err);
+    cleanupProgress = { ...cleanupProgress, done: true };
+    cleanupRunning = false;
+  }
+});
+
+// GET /api/faces/cleanup-quality/status — Check cleanup progress
+router.get('/cleanup-quality/status', authenticate, async (_req, res) => {
+  const { rows } = await pool.query('SELECT count(*) AS total FROM face_embeddings');
+  res.json({ running: cleanupRunning, total_embeddings: parseInt(rows[0].total, 10), progress: cleanupProgress });
 });
 
 export default router;
