@@ -7,6 +7,7 @@ const FACE_DIR = '/data/recordings/faces';
 const SIMILARITY_THRESHOLD = 0.85; // Watchlist alert threshold
 const VISITOR_THRESHOLD = 0.65;    // Same-person threshold for visitor dedup (lowered to reduce over-counting)
 const MIN_EMBEDDING_CONFIDENCE = 0.35; // Minimum detection confidence to store embedding for search
+const MIN_QUALITY_SCORE = 0.45;    // Minimum quality score (landmarks + size + confidence) to store embedding
 
 // Ensure face image directory exists
 if (!existsSync(FACE_DIR)) {
@@ -87,10 +88,15 @@ export async function storeFaceEmbeddings(cameraId, faces, detectedAt) {
   const ids = [];
 
   for (const face of faces) {
-    // Skip low-confidence detections — they produce noisy embeddings
-    // that hurt search accuracy (common with top-down/fisheye cameras)
-    if (face.confidence < MIN_EMBEDDING_CONFIDENCE) {
-      continue;
+    // Skip low-quality detections — back-of-head, top-of-head, ears, tiny faces
+    // produce noisy embeddings that hurt search accuracy and inflate visitor counts.
+    // quality_score combines landmark visibility, face size, and detection confidence.
+    const quality = face.quality_score ?? null;
+    if (quality !== null) {
+      if (quality < MIN_QUALITY_SCORE) continue;
+    } else {
+      // Fallback for face-service without quality_score (backwards compat)
+      if (face.confidence < MIN_EMBEDDING_CONFIDENCE) continue;
     }
 
     // Save face crop image
@@ -151,7 +157,7 @@ export async function storeFaceEmbeddings(cameraId, faces, detectedAt) {
       `INSERT INTO face_embeddings (camera_id, embedding, face_image, confidence, detected_at, person_id)
        VALUES ($1, $2::vector, $3, $4, $5, $6)
        RETURNING id`,
-      [cameraId, embeddingStr, facePath, face.confidence, detectedAt || new Date(), personId]
+      [cameraId, embeddingStr, facePath, quality ?? face.confidence, detectedAt || new Date(), personId]
     );
 
     ids.push(rows[0].id);
@@ -272,7 +278,7 @@ export async function searchFace(embedding, options = {}) {
     JOIN cameras c ON c.id = fe.camera_id
     JOIN pdvs p ON p.id = c.pdv_id
     WHERE 1 - (fe.embedding <=> $1::vector) >= $2
-      AND fe.confidence >= ${MIN_EMBEDDING_CONFIDENCE}
+      AND fe.confidence >= ${MIN_QUALITY_SCORE}
   `;
   const params = [embeddingStr, minSimilarity];
   let paramIdx = 3;

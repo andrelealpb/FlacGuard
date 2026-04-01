@@ -36,6 +36,10 @@ FACE_THRESH_FULL = 0.3       # direct detection on full image
 FACE_THRESH_CROP = 0.2       # detection on YOLO person crops
 PERSON_CONF = 0.4             # YOLO person confidence
 
+# Quality score thresholds
+MIN_FACE_SIZE = 40            # minimum face bbox dimension (px) to be useful
+IDEAL_FACE_SIZE = 112         # InsightFace alignment target size
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -62,6 +66,70 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Flac Guard Face Service", lifespan=lifespan)
 
 
+def _compute_quality_score(face):
+    """
+    Compute a composite quality score (0.0–1.0) for a detected face.
+
+    Combines three signals:
+    1. Landmark visibility — are both eyes and nose detected and well-spaced?
+       Back-of-head, top-of-head, and ear-only detections have collapsed/missing
+       landmarks and score near zero.
+    2. Face size — tiny faces produce poor embeddings. Penalises faces below
+       MIN_FACE_SIZE and caps benefit at IDEAL_FACE_SIZE.
+    3. Detection confidence (det_score) — direct from InsightFace.
+
+    Weights: landmarks 50%, size 25%, confidence 25%.
+    """
+    score_landmarks = 0.0
+    score_size = 0.0
+    score_conf = min(float(face.det_score), 1.0)
+
+    # --- Landmark analysis (InsightFace kps: 5 points) ---
+    # [0] left eye, [1] right eye, [2] nose, [3] left mouth, [4] right mouth
+    kps = getattr(face, 'kps', None) if hasattr(face, 'kps') else getattr(face, 'landmark_2d_106', None)
+    bbox = face.bbox.astype(float)
+    bw = max(bbox[2] - bbox[0], 1)
+    bh = max(bbox[3] - bbox[1], 1)
+
+    if kps is not None and len(kps) >= 5:
+        left_eye, right_eye, nose = kps[0], kps[1], kps[2]
+
+        # Inter-eye distance relative to bbox width (frontal face ≈ 0.35–0.45)
+        eye_dist = np.linalg.norm(left_eye - right_eye)
+        eye_ratio = eye_dist / bw
+        # Collapsed landmarks (nuca/topo) → eye_ratio near 0
+        eye_score = min(eye_ratio / 0.25, 1.0)  # full score at 25%+ of bbox width
+
+        # Nose should be between eyes vertically and below them
+        eye_center_y = (left_eye[1] + right_eye[1]) / 2
+        nose_below = (nose[1] - eye_center_y) / bh
+        # Frontal/slight angle: nose is 5-30% below eye center
+        nose_score = 1.0 if 0.03 < nose_below < 0.4 else max(0, 0.5 - abs(nose_below - 0.2))
+
+        # All 5 landmarks should be inside the bounding box
+        inside_count = sum(
+            1 for pt in kps[:5]
+            if bbox[0] <= pt[0] <= bbox[2] and bbox[1] <= pt[1] <= bbox[3]
+        )
+        inside_score = inside_count / 5.0
+
+        score_landmarks = 0.4 * eye_score + 0.3 * nose_score + 0.3 * inside_score
+    else:
+        # No landmarks available — cannot validate face orientation
+        score_landmarks = 0.0
+
+    # --- Face size analysis ---
+    face_size = min(bw, bh)
+    if face_size < MIN_FACE_SIZE:
+        score_size = face_size / MIN_FACE_SIZE * 0.5  # harsh penalty for tiny faces
+    else:
+        score_size = min(face_size / IDEAL_FACE_SIZE, 1.0)
+
+    # --- Composite score ---
+    quality = 0.50 * score_landmarks + 0.25 * score_size + 0.25 * score_conf
+    return round(quality, 3)
+
+
 def _extract_face_result(face, img):
     """Convert an InsightFace detection to our API result dict."""
     bbox = face.bbox.astype(int).tolist()
@@ -84,9 +152,12 @@ def _extract_face_result(face, img):
     _, buf = cv2.imencode(".jpg", face_crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
     face_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
 
+    quality = _compute_quality_score(face)
+
     return {
         "bbox": bbox,
         "confidence": confidence,
+        "quality_score": quality,
         "embedding": embedding,
         "face_image_b64": face_b64,
     }
@@ -243,6 +314,7 @@ async def embed_photo(file: UploadFile = File(...)):
     return {
         "embedding": best.embedding.tolist(),
         "confidence": float(best.det_score),
+        "quality_score": _compute_quality_score(best),
         "faces_found": len(faces),
     }
 
