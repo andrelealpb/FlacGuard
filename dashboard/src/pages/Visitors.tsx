@@ -53,6 +53,8 @@ function Visitors() {
   const [loading, setLoading] = useState(false);
   const [reimporting, setReimporting] = useState(false);
   const [reimportStatus, setReimportStatus] = useState("");
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanupStatus, setCleanupStatus] = useState("");
 
   // Date range
   const now = new Date();
@@ -124,6 +126,36 @@ function Visitors() {
   };
 
 
+  const handleCleanup = async () => {
+    if (!confirm("Limpar embeddings de baixa qualidade (nucas, topos de cabeça, orelhas)? Isso pode demorar algumas horas para 150k+ embeddings.")) return;
+    setCleaning(true);
+    setCleanupStatus("Iniciando...");
+    try {
+      const res = await apiFetch("/api/faces/cleanup-quality", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { setCleanupStatus(data.error || "Erro"); setCleaning(false); return; }
+      setCleanupStatus(data.message || "Limpeza iniciada");
+      const poll = setInterval(async () => {
+        try {
+          const sr = await apiFetch("/api/faces/cleanup-quality/status");
+          const st = await sr.json();
+          const p = st.progress;
+          if (p && p.total > 0) {
+            const pct = Math.round((p.checked / p.total) * 100);
+            setCleanupStatus(
+              `${pct}% — ${p.deleted} removidos, ${p.orphans || 0} órfãos, ${p.kept} mantidos, ${p.errors} erros (${p.checked}/${p.total})` +
+              (p.done ? " — Concluído!" : "")
+            );
+          }
+          if (!st.running && p?.done) { clearInterval(poll); setCleaning(false); }
+        } catch { clearInterval(poll); setCleaning(false); }
+      }, 5000);
+    } catch {
+      setCleanupStatus("Erro ao iniciar limpeza");
+      setCleaning(false);
+    }
+  };
+
   const maxVisitors = Math.max(1, ...days.map((d) => d.total_visitors));
   const totalPeriod = days.reduce((acc, d) => acc + d.total_visitors, 0);
   const avgPerDay = days.length > 0 ? Math.round(totalPeriod / days.length) : 0;
@@ -171,12 +203,20 @@ function Visitors() {
     <div style={{ maxWidth: "1000px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
         <h2 style={{ margin: 0, fontSize: "1.1rem" }}>Visitantes Distintos</h2>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-          {reimportStatus && <span style={{ fontSize: "0.7rem", color: reimporting ? "#ff9800" : "#4caf50" }}>{reimportStatus}</span>}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {cleanupStatus && <span style={{ fontSize: "0.7rem", color: cleaning ? "#ff9800" : "#4caf50", maxWidth: "400px", textAlign: "right" }}>{cleanupStatus}</span>}
+          {reimportStatus && !cleanupStatus && <span style={{ fontSize: "0.7rem", color: reimporting ? "#ff9800" : "#4caf50" }}>{reimportStatus}</span>}
+          <button
+            onClick={handleCleanup}
+            disabled={cleaning || reimporting}
+            style={{ ...btn, background: "#e65100", color: "#fff", border: "1px solid #e65100", opacity: cleaning || reimporting ? 0.5 : 1, fontSize: "0.7rem" }}
+          >
+            {cleaning ? "Limpando..." : "Limpar baixa qualidade"}
+          </button>
           <button
             onClick={handleReimport}
-            disabled={reimporting}
-            style={{ ...btn, background: "#1565c0", color: "#fff", border: "1px solid #1565c0", opacity: reimporting ? 0.5 : 1, fontSize: "0.7rem" }}
+            disabled={reimporting || cleaning}
+            style={{ ...btn, background: "#1565c0", color: "#fff", border: "1px solid #1565c0", opacity: reimporting || cleaning ? 0.5 : 1, fontSize: "0.7rem" }}
           >
             {reimporting ? "Reimportando..." : "Reimportar faces"}
           </button>
