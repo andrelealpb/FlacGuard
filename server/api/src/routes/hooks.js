@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'fs';
 import { pool } from '../db/pool.js';
 import { onCameraOnline, onCameraOffline } from '../services/motion-detector.js';
 import { startContinuousRecording, stopRecording } from '../services/recorder.js';
+import { logCameraStatusChange } from '../services/camera-availability.js';
 
 const router = Router();
 
@@ -12,7 +13,7 @@ router.get('/on-publish', async (req, res) => {
     const { name: streamKey, addr } = req.query;
 
     // Validate stream key — fetch all and match in JS to debug DB query issue
-    const { rows: allCams } = await pool.query('SELECT id, stream_key, name FROM cameras');
+    const { rows: allCams } = await pool.query('SELECT id, stream_key, name, tenant_id FROM cameras');
     const camera = allCams.find(c => c.stream_key === streamKey);
 
     if (!camera) {
@@ -34,6 +35,11 @@ router.get('/on-publish', async (req, res) => {
       `UPDATE cameras SET status = 'online', last_seen_at = now(), updated_at = now()
        WHERE stream_key = $1`,
       [streamKey]
+    );
+
+    // Log availability transition
+    logCameraStatusChange(camera.id, camera.tenant_id, 'online').catch(err =>
+      console.error(`[availability] Error logging online for ${camera.name}:`, err.message)
     );
 
     // Create online event
@@ -79,7 +85,7 @@ router.get('/on-publish-done', async (req, res) => {
 
     const { rows } = await pool.query(
       `UPDATE cameras SET status = 'offline', updated_at = now()
-       WHERE stream_key = $1 RETURNING id, name`,
+       WHERE stream_key = $1 RETURNING id, name, tenant_id`,
       [streamKey]
     );
 
@@ -87,6 +93,11 @@ router.get('/on-publish-done', async (req, res) => {
       await pool.query(
         `INSERT INTO events (camera_id, type, payload) VALUES ($1, 'offline', '{}')`,
         [rows[0].id]
+      );
+
+      // Log availability transition
+      logCameraStatusChange(rows[0].id, rows[0].tenant_id, 'offline').catch(err =>
+        console.error(`[availability] Error logging offline for ${rows[0].name}:`, err.message)
       );
 
       // Notify motion detector and stop any recording
