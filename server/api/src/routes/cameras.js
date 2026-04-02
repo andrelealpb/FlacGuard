@@ -465,4 +465,92 @@ router.get('/:id/download', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/cameras/availability — Camera availability stats for SaaS / Control
+// Accepts ?days=21 (default 21). Auth: gateway (X-Internal-Key + X-Tenant-Id) or JWT.
+router.get('/availability', authenticate, async (req, res) => {
+  try {
+    const tenantId = getTenantId(req);
+    const days = parseInt(req.query.days, 10) || 21;
+
+    const { rows: logs } = await pool.query(
+      `SELECT cal.camera_id, cal.status, cal.started_at, cal.ended_at, cal.duration_seconds,
+              c.name AS camera_name, p.name AS pdv_name
+       FROM camera_availability_log cal
+       JOIN cameras c ON c.id = cal.camera_id
+       LEFT JOIN pdvs p ON p.id = c.pdv_id
+       WHERE cal.tenant_id = $1
+         AND cal.started_at >= now() - ($2 || ' days')::interval
+       ORDER BY cal.camera_id, cal.started_at`,
+      [tenantId, String(days)]
+    );
+
+    // Get current camera statuses
+    const { rows: cameras } = await pool.query(
+      `SELECT c.id, c.name, c.status, c.last_seen_at, p.name AS pdv_name
+       FROM cameras c
+       LEFT JOIN pdvs p ON p.id = c.pdv_id
+       WHERE c.tenant_id = $1`,
+      [tenantId]
+    );
+
+    const totalSeconds = days * 86400;
+
+    // Group logs by camera
+    const cameraMap = new Map();
+    for (const cam of cameras) {
+      cameraMap.set(cam.id, {
+        camera_id: cam.id,
+        camera_name: cam.name,
+        pdv_name: cam.pdv_name,
+        current_status: cam.status,
+        online_since: cam.status === 'online' ? cam.last_seen_at : null,
+        stats: { total_seconds: totalSeconds, online_seconds: 0, offline_seconds: 0, availability_percent: 0, offline_count: 0 },
+        log: [],
+      });
+    }
+
+    const now = Date.now();
+    const periodStart = now - days * 86400 * 1000;
+
+    for (const row of logs) {
+      const entry = cameraMap.get(row.camera_id);
+      if (!entry) continue;
+
+      // Filter micro-interruptions from output
+      if (row.duration_seconds !== null && row.duration_seconds <= 30) continue;
+
+      const startMs = Math.max(new Date(row.started_at).getTime(), periodStart);
+      const endMs = row.ended_at ? new Date(row.ended_at).getTime() : now;
+      const durationSec = Math.max(0, Math.round((endMs - startMs) / 1000));
+
+      if (row.status === 'online') {
+        entry.stats.online_seconds += durationSec;
+      } else {
+        entry.stats.offline_seconds += durationSec;
+        entry.stats.offline_count++;
+      }
+
+      entry.log.push({
+        status: row.status,
+        started_at: row.started_at,
+        ended_at: row.ended_at,
+        duration_seconds: row.ended_at ? row.duration_seconds : durationSec,
+      });
+    }
+
+    // Compute availability percentages
+    for (const entry of cameraMap.values()) {
+      const accounted = entry.stats.online_seconds + entry.stats.offline_seconds;
+      if (accounted > 0) {
+        entry.stats.availability_percent = parseFloat(((entry.stats.online_seconds / accounted) * 100).toFixed(1));
+      }
+    }
+
+    res.json(Array.from(cameraMap.values()));
+  } catch (err) {
+    console.error('[availability] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

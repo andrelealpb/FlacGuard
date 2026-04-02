@@ -1,4 +1,5 @@
 import { pool } from '../db/pool.js';
+import { logCameraStatusChange } from './camera-availability.js';
 
 const OFFLINE_THRESHOLD_MS = 90_000; // 90 seconds without heartbeat
 
@@ -9,15 +10,29 @@ const OFFLINE_THRESHOLD_MS = 90_000; // 90 seconds without heartbeat
 export async function checkCameraHealth() {
   const threshold = new Date(Date.now() - OFFLINE_THRESHOLD_MS).toISOString();
 
-  const { rowCount } = await pool.query(
-    `UPDATE cameras
-     SET status = 'offline', updated_at = now()
+  // Fetch cameras that will go offline BEFORE updating, so we can log the transition
+  const { rows: goingOffline } = await pool.query(
+    `SELECT id, tenant_id, name FROM cameras
      WHERE status = 'online' AND last_seen_at < $1`,
     [threshold]
   );
 
-  if (rowCount > 0) {
-    console.log(`Marked ${rowCount} camera(s) as offline (no heartbeat)`);
+  if (goingOffline.length > 0) {
+    await pool.query(
+      `UPDATE cameras
+       SET status = 'offline', updated_at = now()
+       WHERE status = 'online' AND last_seen_at < $1`,
+      [threshold]
+    );
+
+    console.log(`Marked ${goingOffline.length} camera(s) as offline (no heartbeat)`);
+
+    // Log availability transitions
+    for (const cam of goingOffline) {
+      logCameraStatusChange(cam.id, cam.tenant_id, 'offline').catch(err =>
+        console.error(`[availability] Error logging offline for ${cam.name}:`, err.message)
+      );
+    }
   }
 
   // Create offline events
