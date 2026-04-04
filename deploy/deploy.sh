@@ -77,11 +77,29 @@ COMMIT_AUTHOR=$(git log -1 --pretty=%an)
 # Build each service individually to capture per-service build status
 BUILD_TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
+# Detect which files changed in this deploy to skip heavy builds (face-service)
+CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+FACE_SERVICE_CHANGED=false
+if echo "$CHANGED_FILES" | grep -q '^server/face-service/'; then
+  FACE_SERVICE_CHANGED=true
+fi
+
 SERVICES="dashboard api face-service nginx-rtmp"
 BUILD_RESULTS=""
 BUILD_FAILED=false
 
 for SERVICE in $SERVICES; do
+  # Skip face-service build if its files haven't changed (saves ~4-5 min)
+  if [ "$SERVICE" = "face-service" ] && [ "$FACE_SERVICE_CHANGED" = "false" ]; then
+    echo "$LOG_PREFIX Skipping $SERVICE build (no changes detected)"
+    SERVICE_BUILD_START=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    SERVICE_BUILD_STATUS="skipped"
+    SERVICE_BUILD_END="$SERVICE_BUILD_START"
+    if [ -n "$BUILD_RESULTS" ]; then BUILD_RESULTS="$BUILD_RESULTS,"; fi
+    BUILD_RESULTS="$BUILD_RESULTS{\"name\":\"$SERVICE\",\"build_status\":\"$SERVICE_BUILD_STATUS\",\"build_started_at\":\"$SERVICE_BUILD_START\",\"build_finished_at\":\"$SERVICE_BUILD_END\"}"
+    continue
+  fi
+
   echo "$LOG_PREFIX Building $SERVICE..."
   update_status "Build: $SERVICE"
   SERVICE_BUILD_START=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
