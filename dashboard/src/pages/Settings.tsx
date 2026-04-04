@@ -288,17 +288,17 @@ function Settings() {
                         padding: "0.5rem 0.75rem",
                         borderRadius: "6px",
                         border: "1px solid",
-                        borderColor: svc.build_status === "success" ? "#c8e6c9" : "#ffcdd2",
-                        background: svc.build_status === "success" ? "#f1f8e9" : "#fce4ec",
+                        borderColor: svc.build_status === "success" ? "#c8e6c9" : svc.build_status === "skipped" ? "#e0e0e0" : "#ffcdd2",
+                        background: svc.build_status === "success" ? "#f1f8e9" : svc.build_status === "skipped" ? "#f5f5f5" : "#fce4ec",
                       }}
                     >
                       <div style={{ fontSize: "0.8rem", fontWeight: 600 }}>{svc.name}</div>
                       <div style={{
                         fontSize: "0.75rem",
-                        color: svc.build_status === "success" ? "#2e7d32" : "#c62828",
+                        color: svc.build_status === "success" ? "#2e7d32" : svc.build_status === "skipped" ? "#757575" : "#c62828",
                         fontWeight: 600,
                       }}>
-                        {svc.build_status === "success" ? "Build OK" : "Build falhou"}
+                        {svc.build_status === "success" ? "Build OK" : svc.build_status === "skipped" ? "Sem alterações" : "Build falhou"}
                       </div>
                     </div>
                   ))}
