@@ -14,13 +14,15 @@ import io
 import logging
 import time
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse
 from insightface.app import FaceAnalysis
 from ultralytics import YOLO
+from ultralytics.trackers.byte_tracker import BYTETracker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("face-service")
@@ -363,3 +365,106 @@ async def detect_persons(file: UploadFile = File(...)):
         "count": len(persons),
         "elapsed_ms": round(elapsed * 1000),
     })
+
+
+# --- Person tracking (ByteTrack) ---
+# One BYTETracker instance per camera to keep tracker IDs stable
+# across frames of the same camera while isolating between cameras.
+camera_trackers: dict[str, BYTETracker] = {}
+
+# Motion detector runs ~every 3-4s, so effective frame rate is ~0.3 fps.
+# track_buffer is in frames, so at 0.3 fps, buffer=10 means ~30s of "lost" tolerance
+# before a track is discarded — enough to survive brief occlusion/turning.
+TRACKER_ARGS = SimpleNamespace(
+    track_high_thresh=0.5,
+    track_low_thresh=0.1,
+    new_track_thresh=0.6,
+    track_buffer=10,
+    match_thresh=0.8,
+    fuse_score=True,
+)
+TRACKER_FRAME_RATE = 1  # conservative (real rate is lower, but BYTETracker uses this for buffer math)
+
+
+def _get_tracker(camera_id: str) -> BYTETracker:
+    if camera_id not in camera_trackers:
+        camera_trackers[camera_id] = BYTETracker(TRACKER_ARGS, frame_rate=TRACKER_FRAME_RATE)
+        logger.info(f"Created tracker for camera {camera_id}")
+    return camera_trackers[camera_id]
+
+
+@app.post("/track-persons")
+async def track_persons(
+    file: UploadFile = File(...),
+    camera_id: str = Form(...),
+):
+    """
+    Detect and track persons across frames of a specific camera.
+    Returns stable tracker_id for each person so the motion-detector
+    can group all detections of the same physical person into a single
+    visitor (PR 2 will consume this).
+
+    Uses ByteTrack with one tracker instance per camera.
+    Accepts: JPEG/PNG image + camera_id form field.
+    Returns: { persons: [{ bbox, confidence, tracker_id }], count, elapsed_ms }
+    """
+    if yolo_model is None:
+        raise HTTPException(503, "YOLO model not loaded yet")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(400, "Empty file")
+
+    nparr = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "Invalid image")
+
+    t0 = time.time()
+
+    # Run YOLO person detection
+    results = yolo_model(img, classes=[PERSON_CLASS_ID], conf=PERSON_CONF, verbose=False)
+    det_boxes = results[0].boxes
+
+    tracker = _get_tracker(camera_id)
+
+    persons = []
+    if det_boxes is not None and len(det_boxes) > 0:
+        # Pass the Boxes object directly — BYTETracker reads .conf/.xyxy/.cls
+        # attributes and handles tensor→numpy conversion internally.
+        tracks = tracker.update(det_boxes, img)
+        # tracks is a numpy array, shape (N, 7+): [x1, y1, x2, y2, track_id, conf, cls, ...]
+        for t in tracks:
+            x1, y1, x2, y2 = int(t[0]), int(t[1]), int(t[2]), int(t[3])
+            tracker_id = int(t[4])
+            conf = float(t[5]) if len(t) > 5 else 0.0
+            persons.append({
+                "bbox": [x1, y1, x2, y2],
+                "confidence": conf,
+                "tracker_id": tracker_id,
+            })
+
+    elapsed = time.time() - t0
+
+    if persons:
+        logger.info(f"[track] camera={camera_id} tracked {len(persons)} person(s) in {elapsed*1000:.0f}ms")
+
+    return JSONResponse({
+        "persons": persons,
+        "count": len(persons),
+        "elapsed_ms": round(elapsed * 1000),
+    })
+
+
+@app.post("/track-reset")
+async def track_reset(camera_id: str = Form(...)):
+    """
+    Reset the tracker state for a specific camera.
+    Called by the API when a camera goes offline so stale tracks
+    don't carry over when it comes back online.
+    """
+    if camera_id in camera_trackers:
+        del camera_trackers[camera_id]
+        logger.info(f"Tracker reset for camera {camera_id}")
+        return {"status": "reset", "camera_id": camera_id}
+    return {"status": "not_found", "camera_id": camera_id}
