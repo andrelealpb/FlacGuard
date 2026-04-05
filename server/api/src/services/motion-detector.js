@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { pool } from '../db/pool.js';
 import { startRecording, stopRecording, isRecording } from './recorder.js';
-import { detectFaces, detectPersons, trackPersons, storeFaceEmbeddings, checkWatchlist, isFaceServiceHealthy, countDistinctVisitors, resetTracker } from './face-recognition.js';
+import { detectFaces, trackPersons, storeFaceEmbeddings, checkWatchlist, isFaceServiceHealthy, countDistinctVisitors, resetTracker } from './face-recognition.js';
 import { updateTracksFromResponse, finalizeStaleTracks, finalizeAllTracksForCamera } from './track-manager.js';
 
 // Per-camera state
@@ -139,34 +139,17 @@ function extractFrameJpeg(hlsUrl) {
 const lastVisitorComputation = new Map();
 const VISITOR_COMPUTATION_INTERVAL = 5 * 60 * 1000; // Recompute at most every 5 minutes
 
-// Process face detection for a frame (runs async, doesn't block motion detection)
-async function processFaces(camera, hlsUrl) {
+// Process face detection given a frame buffer and pre-computed tracks.
+// Used when the motion flow already extracted a frame and ran trackPersons
+// as part of person confirmation — avoids extracting the frame again and
+// running YOLO twice on the same camera cycle.
+async function processFacesFromFrame(camera, jpegBuffer, enrichedTracks) {
   try {
-    const jpegBuffer = await extractFrameJpeg(hlsUrl);
-
-    // Step 1: track persons on this frame (updates active tracks with new bboxes)
-    let enrichedTracks = [];
-    try {
-      const trackResult = await trackPersons(jpegBuffer, camera.id);
-      if (trackResult.persons && trackResult.persons.length > 0) {
-        enrichedTracks = await updateTracksFromResponse(
-          camera.id,
-          camera.tenant_id,
-          trackResult.persons
-        );
-      }
-    } catch {
-      // Tracking failure is non-fatal; continue with face detection
-    }
-
-    // Step 2: detect faces on the SAME frame (bboxes will match for IoU linking)
     const faces = await detectFaces(jpegBuffer);
     if (faces.length === 0) return;
 
-    // Step 3: store embeddings, linking each face to its track via IoU
-    const embeddingIds = await storeFaceEmbeddings(camera.id, faces, new Date(), enrichedTracks);
+    const embeddingIds = await storeFaceEmbeddings(camera.id, faces, new Date(), enrichedTracks || []);
 
-    // Check against watchlist
     if (embeddingIds.length > 0) {
       await checkWatchlist(camera.id, embeddingIds);
     }
@@ -184,23 +167,68 @@ async function processFaces(camera, hlsUrl) {
       });
     }
   } catch (err) {
-    // Only log occasionally to avoid spam
     if (Math.random() < 0.05) {
       console.error(`[Face] Error for camera ${camera.name}:`, err.message?.slice(0, 100));
     }
   }
 }
 
-// Check if persons are present in the frame using YOLO person detection
-async function hasPersons(hlsUrl) {
+// Process face detection for a frame (runs async, doesn't block motion detection)
+// This wrapper is used in the continuous-mode code path where we don't have
+// a pre-extracted frame. It extracts the frame, runs tracking, then delegates.
+async function processFaces(camera, hlsUrl) {
   try {
     const jpegBuffer = await extractFrameJpeg(hlsUrl);
-    const result = await detectPersons(jpegBuffer);
-    return result.count > 0;
+
+    // Track persons on this frame (updates active tracks with new bboxes)
+    let enrichedTracks = [];
+    try {
+      const trackResult = await trackPersons(jpegBuffer, camera.id);
+      if (trackResult.persons && trackResult.persons.length > 0) {
+        enrichedTracks = await updateTracksFromResponse(
+          camera.id,
+          camera.tenant_id,
+          trackResult.persons
+        );
+      }
+    } catch {
+      // Tracking failure is non-fatal; continue with face detection
+    }
+
+    await processFacesFromFrame(camera, jpegBuffer, enrichedTracks);
+  } catch (err) {
+    if (Math.random() < 0.05) {
+      console.error(`[Face] Error for camera ${camera.name}:`, err.message?.slice(0, 100));
+    }
+  }
+}
+
+// Check for persons using YOLO+ByteTrack. Returns the jpeg buffer and the
+// enriched tracks so the caller can reuse them for face detection on the
+// same frame (avoids a second frame extraction and a second YOLO call).
+// Returns { personDetected, jpegBuffer, enrichedTracks } or null on error.
+async function checkPersonsWithTracking(camera, hlsUrl) {
+  try {
+    const jpegBuffer = await extractFrameJpeg(hlsUrl);
+    const trackResult = await trackPersons(jpegBuffer, camera.id);
+    const persons = trackResult.persons || [];
+
+    let enrichedTracks = [];
+    if (persons.length > 0) {
+      enrichedTracks = await updateTracksFromResponse(
+        camera.id,
+        camera.tenant_id,
+        persons
+      );
+    }
+
+    return {
+      personDetected: persons.length > 0,
+      jpegBuffer,
+      enrichedTracks,
+    };
   } catch {
-    // If person detection fails, fall back to allowing the recording
-    // to avoid missing legitimate events
-    return true;
+    return null;
   }
 }
 
@@ -222,6 +250,11 @@ async function processCamera(camera) {
     };
     cameraStates.set(id, state);
   }
+
+  // Tracks whether we already ran face detection in this cycle via the
+  // person-confirmation path, so the trailing fall-through below doesn't
+  // extract the frame and run YOLO a second time on the same camera tick.
+  let facesProcessedThisCycle = false;
 
   try {
     const currentFrame = await extractFrame(hlsUrl);
@@ -248,9 +281,11 @@ async function processCamera(camera) {
 
           console.log(`[Motion] Camera ${camera.name} (${id}): pixel motion detected (${changePercent.toFixed(1)}% change), checking for persons...`);
 
-          // Check for persons using YOLO if face service is available
+          // Check for persons using YOLO+ByteTrack (same call that feeds tracking).
+          // Reuses the extracted frame for face detection below, avoiding duplicate work.
           if (faceServiceAvailable) {
-            const personFound = await hasPersons(hlsUrl);
+            const result = await checkPersonsWithTracking(camera, hlsUrl);
+            const personFound = result?.personDetected || false;
             state.personCheckAttempts++;
 
             if (personFound) {
@@ -279,6 +314,13 @@ async function processCamera(camera) {
                   console.error(`[Motion] Thumbnail error for ${camera.name}:`, thumbErr.message);
                   startRecording(camera, 'motion', null);
                 }
+              }
+
+              // Run face detection on the SAME frame we just analysed — no second
+              // frame extraction, no second YOLO call.
+              if (camera.capture_face !== false && result) {
+                processFacesFromFrame(camera, result.jpegBuffer, result.enrichedTracks).catch(() => {});
+                facesProcessedThisCycle = true;
               }
             } else {
               console.log(`[Motion] Camera ${camera.name} (${id}): no person detected (attempt ${state.personCheckAttempts}), skipping...`);
@@ -314,7 +356,8 @@ async function processCamera(camera) {
           // Allow up to 3 attempts (covering ~9 seconds of motion)
           const MAX_PERSON_CHECK_ATTEMPTS = 3;
           if (state.personCheckAttempts < MAX_PERSON_CHECK_ATTEMPTS) {
-            const personFound = await hasPersons(hlsUrl);
+            const result = await checkPersonsWithTracking(camera, hlsUrl);
+            const personFound = result?.personDetected || false;
             state.personCheckAttempts++;
 
             if (personFound) {
@@ -342,6 +385,12 @@ async function processCamera(camera) {
                   console.error(`[Motion] Thumbnail error for ${camera.name}:`, thumbErr.message);
                   startRecording(camera, 'motion', null);
                 }
+              }
+
+              // Reuse the same frame for face detection — no duplicate work
+              if (camera.capture_face !== false && result) {
+                processFacesFromFrame(camera, result.jpegBuffer, result.enrichedTracks).catch(() => {});
+                facesProcessedThisCycle = true;
               }
             } else {
               console.log(`[Motion] Camera ${camera.name} (${id}): no person (attempt ${state.personCheckAttempts}/${MAX_PERSON_CHECK_ATTEMPTS})`);
@@ -397,12 +446,12 @@ async function processCamera(camera) {
       }
     }
 
-    // Face detection: run async (non-blocking) when face service is available
-    // Only process faces if camera has capture_face enabled
-    // Process every frame when motion is active and person confirmed, or every ~5th frame when idle
+    // Face detection: run async (non-blocking) when face service is available.
+    // Skip if we already processed faces earlier in this cycle via the
+    // person-confirmation path (avoids double YOLO + double face detection).
     const shouldCaptureFace = camera.capture_face !== false;
-    if (faceServiceAvailable && shouldCaptureFace) {
-      const shouldProcess = (state.motionActive && state.personConfirmed) || Math.random() < 0.2;
+    if (faceServiceAvailable && shouldCaptureFace && !facesProcessedThisCycle) {
+      const shouldProcess = (state.motionActive && state.personConfirmed) || Math.random() < 0.1;
       if (shouldProcess) {
         processFaces(camera, hlsUrl).catch(() => {});
       }
