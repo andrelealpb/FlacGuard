@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { pool } from '../db/pool.js';
 import { startRecording, stopRecording, isRecording } from './recorder.js';
-import { detectFaces, detectPersons, storeFaceEmbeddings, checkWatchlist, isFaceServiceHealthy, countDistinctVisitors } from './face-recognition.js';
+import { detectFaces, detectPersons, storeFaceEmbeddings, checkWatchlist, isFaceServiceHealthy, countDistinctVisitors, resetTracker } from './face-recognition.js';
 
 // Per-camera state
 const cameraStates = new Map();
@@ -479,9 +479,13 @@ export function onCameraOffline(cameraId) {
     cameraStates.delete(cameraId);
   }
   stopRecording(cameraId);
+  // Reset the ByteTrack state so the next session starts with fresh track IDs
+  resetTracker(cameraId).catch(() => { /* best-effort */ });
 }
 
 // Clean up state when a camera comes online (reset)
 export function onCameraOnline(cameraId) {
   cameraStates.delete(cameraId);
+  // Reset tracker in case a previous session left stale state
+  resetTracker(cameraId).catch(() => { /* best-effort */ });
 }

@@ -80,6 +80,50 @@ export async function detectPersons(jpegBuffer) {
 }
 
 /**
+ * Track persons across frames using ByteTrack (one tracker per camera).
+ * Returns stable tracker_id per person, allowing us to group all detections
+ * of the same physical person into a single visitor count.
+ * Returns { persons: [{ bbox, confidence, tracker_id }], count }
+ */
+export async function trackPersons(jpegBuffer, cameraId) {
+  const formData = new FormData();
+  formData.append('file', new Blob([jpegBuffer], { type: 'image/jpeg' }), 'frame.jpg');
+  formData.append('camera_id', cameraId);
+
+  const res = await fetch(`${FACE_SERVICE_URL}/track-persons`, {
+    method: 'POST',
+    body: formData,
+    signal: AbortSignal.timeout(5000),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Person tracking failed (${res.status}): ${text}`);
+  }
+
+  return await res.json();
+}
+
+/**
+ * Reset the ByteTrack state for a camera (called when camera goes offline
+ * so stale tracks don't carry over when it comes back online).
+ */
+export async function resetTracker(cameraId) {
+  const formData = new FormData();
+  formData.append('camera_id', cameraId);
+
+  try {
+    await fetch(`${FACE_SERVICE_URL}/track-reset`, {
+      method: 'POST',
+      body: formData,
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch {
+    // Best-effort: if face-service is down, the tracker state is lost anyway
+  }
+}
+
+/**
  * Store detected face embeddings in database.
  * Links identical faces to the same person_id while keeping all captures
  * for better search accuracy. Uses vector similarity to find matching persons.
