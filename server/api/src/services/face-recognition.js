@@ -1,6 +1,7 @@
 import { pool } from '../db/pool.js';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
+import { faceInPersonRatio, onFaceAttached } from './track-manager.js';
 
 const FACE_SERVICE_URL = process.env.FACE_SERVICE_URL || 'http://face-service:8001';
 const FACE_DIR = '/data/recordings/faces';
@@ -127,8 +128,12 @@ export async function resetTracker(cameraId) {
  * Store detected face embeddings in database.
  * Links identical faces to the same person_id while keeping all captures
  * for better search accuracy. Uses vector similarity to find matching persons.
+ *
+ * If `trackedPersons` is provided (array of { tracker_id, bbox, track_uuid }
+ * from track-manager), each face is also linked to the best matching track
+ * via IoU, populating face_embeddings.track_id.
  */
-export async function storeFaceEmbeddings(cameraId, faces, detectedAt) {
+export async function storeFaceEmbeddings(cameraId, faces, detectedAt, trackedPersons = []) {
   const ids = [];
 
   for (const face of faces) {
@@ -157,6 +162,19 @@ export async function storeFaceEmbeddings(cameraId, faces, detectedAt) {
 
     // Serialize embedding as pgvector format
     const embeddingStr = `[${face.embedding.join(',')}]`;
+
+    // Find the best matching active track (via IoU with person bbox)
+    let matchedTrack = null;
+    if (trackedPersons && trackedPersons.length > 0 && face.bbox) {
+      let bestRatio = 0.3; // mesmo threshold do track-manager
+      for (const tp of trackedPersons) {
+        const ratio = faceInPersonRatio(face.bbox, tp.bbox);
+        if (ratio > bestRatio) {
+          bestRatio = ratio;
+          matchedTrack = tp;
+        }
+      }
+    }
 
     // Find an existing person_id by matching against recent embeddings (last 30 days)
     // Uses pgvector HNSW index for fast similarity search
@@ -197,14 +215,21 @@ export async function storeFaceEmbeddings(cameraId, faces, detectedAt) {
       personId = uuidRows[0].id;
     }
 
+    const trackUuid = matchedTrack ? matchedTrack.track_uuid : null;
+
     const { rows } = await pool.query(
-      `INSERT INTO face_embeddings (camera_id, embedding, face_image, confidence, detected_at, person_id)
-       VALUES ($1, $2::vector, $3, $4, $5, $6)
+      `INSERT INTO face_embeddings (camera_id, embedding, face_image, confidence, detected_at, person_id, track_id)
+       VALUES ($1, $2::vector, $3, $4, $5, $6, $7)
        RETURNING id`,
-      [cameraId, embeddingStr, facePath, quality ?? face.confidence, detectedAt || new Date(), personId]
+      [cameraId, embeddingStr, facePath, quality ?? face.confidence, detectedAt || new Date(), personId, trackUuid]
     );
 
     ids.push(rows[0].id);
+
+    // Notify the track manager so it can update the "best frame" of the track
+    if (matchedTrack) {
+      onFaceAttached(cameraId, trackUuid, quality ?? 0, embeddingStr, facePath, null);
+    }
   }
 
   return ids;
@@ -430,16 +455,168 @@ export async function countDistinctVisitors(cameraId, date) {
 }
 
 /**
- * Get visitor counts over a date range, deduplicated across cameras within each PDV.
- * pdvIds can be null (all), a single string, or an array of IDs.
+ * Parse a pgvector string "[0.1,0.2,...]" into a Float32Array.
+ * Embeddings are L2-normalized by the face-service, so cosine similarity
+ * equals the dot product — no need to divide by norms.
+ */
+function parsePgVector(str) {
+  if (!str) return null;
+  const s = typeof str === 'string' ? str : String(str);
+  const trimmed = s.startsWith('[') ? s.slice(1, -1) : s;
+  const parts = trimmed.split(',');
+  const arr = new Float32Array(parts.length);
+  for (let i = 0; i < parts.length; i++) arr[i] = parseFloat(parts[i]);
+  return arr;
+}
+
+function dotProduct(a, b) {
+  let dot = 0;
+  const n = a.length;
+  for (let i = 0; i < n; i++) dot += a[i] * b[i];
+  return dot;
+}
+
+/**
+ * Greedy clustering: agrupa tracks cujos best_embeddings têm similaridade
+ * acima do threshold. Retorna o número de clusters distintos.
+ * Tracks devem vir ordenados por qualidade DESC (melhores viram representatives).
+ */
+function clusterTracks(tracks, threshold = 0.55) {
+  const clusters = [];
+  for (const t of tracks) {
+    if (!t.embeddingArr) continue;
+    let matched = false;
+    for (const c of clusters) {
+      if (dotProduct(t.embeddingArr, c.representative) >= threshold) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      clusters.push({ representative: t.embeddingArr });
+    }
+  }
+  return clusters.length;
+}
+
+/**
+ * Get visitor counts over a date range using the tracking-based counting.
+ * Each person_track = 1 physical person on 1 camera. Cross-camera dedup
+ * within each PDV is done via greedy clustering of best_embeddings.
  *
- * Visitor counting priority per PDV:
- * 1. If a PDV has face-purpose cameras with data, count visitors only from those cameras.
- * 2. Otherwise, fall back to all cameras with capture_face=true (environment cameras).
- * This ensures face cameras (better positioned for counting) take priority,
- * while environment cameras serve as fallback when no face cameras exist.
+ * Falls back to the legacy face_embeddings.person_id counting for dates
+ * before person_tracks existed (preserves historical data).
+ *
+ * pdvIds: null (all) | string (one) | array of IDs.
  */
 export async function getVisitorsByPdv(pdvIds, from, to) {
+  // Normalize pdvIds
+  let pdvFilter = '';
+  const params = [from, to];
+  if (pdvIds) {
+    const ids = Array.isArray(pdvIds) ? pdvIds : [pdvIds];
+    if (ids.length > 0) {
+      params.push(ids);
+      pdvFilter = `AND c.pdv_id = ANY($3)`;
+    }
+  }
+
+  // Fetch all finalized tracks in the range with their best_embeddings.
+  // Priority logic (same as before): if a PDV has face cameras with tracks
+  // on a given day, only use those; otherwise fall back to all capture_face cameras.
+  const { rows: trackRows } = await pool.query(
+    `WITH day_priority AS (
+       SELECT
+         c.pdv_id,
+         pt.started_at::date AS d,
+         bool_or(c.camera_purpose = 'face') AS has_face_cameras
+       FROM person_tracks pt
+       JOIN cameras c ON c.id = pt.camera_id
+       WHERE pt.ended_at IS NOT NULL
+         AND pt.best_embedding IS NOT NULL
+         AND pt.started_at::date >= $1
+         AND pt.started_at::date <= $2
+         AND c.capture_face = true
+         ${pdvFilter}
+       GROUP BY c.pdv_id, pt.started_at::date
+     )
+     SELECT
+       pt.id AS track_id,
+       c.pdv_id,
+       p.name AS pdv_name,
+       pt.started_at::date AS d,
+       pt.best_quality_score,
+       pt.best_embedding::text AS embedding_str
+     FROM person_tracks pt
+     JOIN cameras c ON c.id = pt.camera_id
+     JOIN pdvs p ON p.id = c.pdv_id
+     JOIN day_priority dp ON dp.pdv_id = c.pdv_id AND dp.d = pt.started_at::date
+     WHERE pt.ended_at IS NOT NULL
+       AND pt.best_embedding IS NOT NULL
+       AND pt.started_at::date >= $1
+       AND pt.started_at::date <= $2
+       AND c.capture_face = true
+       ${pdvFilter}
+       AND (
+         (dp.has_face_cameras = true AND c.camera_purpose = 'face')
+         OR
+         (dp.has_face_cameras = false)
+       )
+     ORDER BY c.pdv_id, pt.started_at::date, pt.best_quality_score DESC`,
+    params
+  );
+
+  // Group tracks by (pdv_id, day) and run clustering per group
+  const byDayPdv = new Map(); // key = "pdv_id|date" → { pdv_id, pdv_name, date, tracks: [] }
+
+  for (const row of trackRows) {
+    const dateStr = row.d instanceof Date
+      ? row.d.toISOString().slice(0, 10)
+      : String(row.d).slice(0, 10);
+    const key = `${row.pdv_id}|${dateStr}`;
+    let bucket = byDayPdv.get(key);
+    if (!bucket) {
+      bucket = { pdv_id: row.pdv_id, pdv_name: row.pdv_name, date: dateStr, tracks: [] };
+      byDayPdv.set(key, bucket);
+    }
+    bucket.tracks.push({
+      id: row.track_id,
+      quality: row.best_quality_score,
+      embeddingArr: parsePgVector(row.embedding_str),
+    });
+  }
+
+  // Cluster each bucket and aggregate by day
+  const byDate = new Map(); // date → { total: 0, by_pdv: [] }
+  for (const bucket of byDayPdv.values()) {
+    const count = clusterTracks(bucket.tracks, 0.55);
+    let day = byDate.get(bucket.date);
+    if (!day) {
+      day = { visit_date: bucket.date, total_visitors: 0, by_pdv: [] };
+      byDate.set(bucket.date, day);
+    }
+    day.total_visitors += count;
+    day.by_pdv.push({ pdv_id: bucket.pdv_id, pdv_name: bucket.pdv_name, count });
+  }
+
+  const trackingResults = Array.from(byDate.values()).sort(
+    (a, b) => b.visit_date.localeCompare(a.visit_date)
+  );
+
+  // If we have tracking results, use them
+  if (trackingResults.length > 0) {
+    return trackingResults;
+  }
+
+  // Fallback: legacy counting via face_embeddings.person_id (for historical dates)
+  return getVisitorsByPdvLegacy(pdvIds, from, to);
+}
+
+/**
+ * Legacy visitor counting (face_embeddings.person_id based).
+ * Kept as fallback for dates before person_tracks were populated.
+ */
+async function getVisitorsByPdvLegacy(pdvIds, from, to) {
   // Normalize pdvIds: null = all, string = single, array = multiple
   let pdvFilter = '';
   const params = [from, to];

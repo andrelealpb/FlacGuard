@@ -1,7 +1,8 @@
 import { spawn } from 'child_process';
 import { pool } from '../db/pool.js';
 import { startRecording, stopRecording, isRecording } from './recorder.js';
-import { detectFaces, detectPersons, storeFaceEmbeddings, checkWatchlist, isFaceServiceHealthy, countDistinctVisitors, resetTracker } from './face-recognition.js';
+import { detectFaces, detectPersons, trackPersons, storeFaceEmbeddings, checkWatchlist, isFaceServiceHealthy, countDistinctVisitors, resetTracker } from './face-recognition.js';
+import { updateTracksFromResponse, finalizeStaleTracks, finalizeAllTracksForCamera } from './track-manager.js';
 
 // Per-camera state
 const cameraStates = new Map();
@@ -142,11 +143,28 @@ const VISITOR_COMPUTATION_INTERVAL = 5 * 60 * 1000; // Recompute at most every 5
 async function processFaces(camera, hlsUrl) {
   try {
     const jpegBuffer = await extractFrameJpeg(hlsUrl);
-    const faces = await detectFaces(jpegBuffer);
 
+    // Step 1: track persons on this frame (updates active tracks with new bboxes)
+    let enrichedTracks = [];
+    try {
+      const trackResult = await trackPersons(jpegBuffer, camera.id);
+      if (trackResult.persons && trackResult.persons.length > 0) {
+        enrichedTracks = await updateTracksFromResponse(
+          camera.id,
+          camera.tenant_id,
+          trackResult.persons
+        );
+      }
+    } catch {
+      // Tracking failure is non-fatal; continue with face detection
+    }
+
+    // Step 2: detect faces on the SAME frame (bboxes will match for IoU linking)
+    const faces = await detectFaces(jpegBuffer);
     if (faces.length === 0) return;
 
-    const embeddingIds = await storeFaceEmbeddings(camera.id, faces, new Date());
+    // Step 3: store embeddings, linking each face to its track via IoU
+    const embeddingIds = await storeFaceEmbeddings(camera.id, faces, new Date(), enrichedTracks);
 
     // Check against watchlist
     if (embeddingIds.length > 0) {
@@ -413,7 +431,7 @@ async function motionDetectionLoop() {
     // Get all online cameras with motion detection enabled or continuous recording
     const { rows: cameras } = await pool.query(
       `SELECT id, name, stream_key, recording_mode, motion_sensitivity, status,
-              camera_purpose, capture_face
+              camera_purpose, capture_face, tenant_id
        FROM cameras WHERE status = 'online'`
     );
 
@@ -441,6 +459,10 @@ async function motionDetectionLoop() {
   }
 }
 
+// Periodic track finalization — runs every 10s to close tracks whose
+// persons have left the camera view (no sightings for STALE_TRACK_MS).
+let trackFinalizerHandle = null;
+
 export function startMotionDetector() {
   if (running) return;
   running = true;
@@ -449,6 +471,13 @@ export function startMotionDetector() {
 
   // Run every 3 seconds
   intervalHandle = setInterval(motionDetectionLoop, 3000);
+
+  // Track finalizer loop — closes stale tracks so daily counts reflect reality
+  trackFinalizerHandle = setInterval(() => {
+    finalizeStaleTracks().catch(err =>
+      console.error('[Motion] Track finalizer error:', err.message)
+    );
+  }, 10_000);
 
   // Run immediately
   motionDetectionLoop();
@@ -459,6 +488,10 @@ export function stopMotionDetector() {
   if (intervalHandle) {
     clearInterval(intervalHandle);
     intervalHandle = null;
+  }
+  if (trackFinalizerHandle) {
+    clearInterval(trackFinalizerHandle);
+    trackFinalizerHandle = null;
   }
 
   // Clear all camera states and stop any active recordings
@@ -479,6 +512,10 @@ export function onCameraOffline(cameraId) {
     cameraStates.delete(cameraId);
   }
   stopRecording(cameraId);
+  // Finalize all active tracks for this camera before resetting
+  finalizeAllTracksForCamera(cameraId).catch(err =>
+    console.error(`[Motion] Error finalizing tracks for camera ${cameraId}:`, err.message)
+  );
   // Reset the ByteTrack state so the next session starts with fresh track IDs
   resetTracker(cameraId).catch(() => { /* best-effort */ });
 }
