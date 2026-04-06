@@ -446,13 +446,15 @@ async function processCamera(camera) {
       }
     }
 
-    // Face detection: run async (non-blocking) when face service is available.
-    // Skip if we already processed faces earlier in this cycle via the
-    // person-confirmation path (avoids double YOLO + double face detection).
+    // Face detection: only run when motion is active AND a real person was
+    // confirmed by YOLO. The old "random idle sampling" (Math.random < 0.1)
+    // was removed because it generated phantom embeddings and false visitor
+    // counts from posters, reflections, TV screens, etc.
+    // Continuous-mode cameras have their own separate path in the main loop
+    // that doesn't go through processCamera at all.
     const shouldCaptureFace = camera.capture_face !== false;
     if (faceServiceAvailable && shouldCaptureFace && !facesProcessedThisCycle) {
-      const shouldProcess = (state.motionActive && state.personConfirmed) || Math.random() < 0.1;
-      if (shouldProcess) {
+      if (state.motionActive && state.personConfirmed) {
         processFaces(camera, hlsUrl).catch(() => {});
       }
     }
