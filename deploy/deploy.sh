@@ -128,7 +128,7 @@ done
 
 echo "$LOG_PREFIX Restarting containers..."
 update_status "Reiniciando containers..."
-docker compose up -d --remove-orphans --force-recreate
+docker compose --env-file .env up -d --remove-orphans --force-recreate
 
 # Wait for services to start (face-service loads ML models and needs more time)
 echo "$LOG_PREFIX Waiting for services..."
