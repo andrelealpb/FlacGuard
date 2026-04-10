@@ -407,6 +407,224 @@ router.post('/search-by-embedding', authenticate, async (req, res) => {
   }
 });
 
+// --- Batch validation of recordings ---
+// Scans all recordings for corrupted MP4s (moov atom missing, unplayable
+// files) and reports/deletes them. Intended to clean up old recordings
+// from before the fragmented-MP4 fix.
+const VALIDATE_BATCH_CONCURRENCY = 3;    // parallel ffprobe calls
+const VALIDATE_BATCH_PAUSE_EVERY = 50;   // pause every N items
+const VALIDATE_BATCH_PAUSE_MS = 500;
+
+let batchValidateRunning = false;
+let batchValidateProgress = {
+  checked: 0,
+  valid: 0,
+  invalid: 0,
+  deleted: 0,
+  errors: 0,
+  total: 0,
+  done: false,
+  dry_run: true,
+  invalid_samples: [], // first 20 invalid IDs for inspection
+};
+
+async function validateSingleFileFfprobe(rec) {
+  // Returns { valid: bool, reason: string }
+  let probeTarget = null;
+  if (rec.s3_key) {
+    try {
+      probeTarget = await getPresignedUrl(rec.s3_key, 600);
+    } catch (err) {
+      return { valid: false, reason: `presign failed: ${err.message}` };
+    }
+  } else if (rec.file_path && existsSync(rec.file_path)) {
+    probeTarget = rec.file_path;
+  } else {
+    return { valid: false, reason: 'orphan (no file)' };
+  }
+
+  const probe = spawnSync('ffprobe', [
+    '-v', 'error',
+    '-select_streams', 'v:0',
+    '-show_entries', 'stream=codec_type',
+    '-of', 'csv=p=0',
+    probeTarget,
+  ], { timeout: 30_000 });
+
+  const stdout = String(probe.stdout || '').trim();
+  const stderr = String(probe.stderr || '').trim().slice(0, 200);
+  const isValid = probe.status === 0 && stdout === 'video';
+
+  return { valid: isValid, reason: isValid ? 'ok' : (stderr || 'no video stream') };
+}
+
+// POST /api/recordings/validate-batch — Scan recordings in batch for corrupted MP4s.
+// Runs in background. Use GET /api/recordings/validate-batch/status to track progress.
+// Body params:
+//   delete_if_invalid: boolean (default false) — if true, deletes corrupted from S3+DB
+//   camera_id: optional UUID filter
+//   from: optional ISO date filter (started_at >= from)
+//   to:   optional ISO date filter (started_at <= to)
+router.post('/validate-batch', authenticate, authorize('admin'), async (req, res) => {
+  if (batchValidateRunning) {
+    return res.status(409).json({ error: 'Batch validation already in progress' });
+  }
+
+  const deleteIfInvalid = req.body?.delete_if_invalid === true;
+  const cameraId = req.body?.camera_id;
+  const from = req.body?.from;
+  const to = req.body?.to;
+  const tenantId = getTenantId(req);
+
+  batchValidateRunning = true;
+
+  try {
+    const conditions = ['c.tenant_id = $1'];
+    const params = [tenantId];
+    let idx = 2;
+
+    if (cameraId) {
+      conditions.push(`r.camera_id = $${idx++}`);
+      params.push(cameraId);
+    }
+    if (from) {
+      conditions.push(`r.started_at >= $${idx++}`);
+      params.push(from);
+    }
+    if (to) {
+      conditions.push(`r.started_at <= $${idx++}`);
+      params.push(to);
+    }
+
+    const whereClause = `WHERE ${conditions.join(' AND ')}`;
+    const { rows: [{ count: totalStr }] } = await pool.query(
+      `SELECT count(*) AS count
+       FROM recordings r
+       JOIN cameras c ON r.camera_id = c.id
+       ${whereClause}`,
+      params
+    );
+    const total = parseInt(totalStr, 10);
+
+    if (total === 0) {
+      batchValidateRunning = false;
+      return res.json({ message: 'No recordings match the filters', total: 0 });
+    }
+
+    res.json({
+      message: `Batch validation started for ${total} recordings (dry_run=${!deleteIfInvalid}). Poll GET /api/recordings/validate-batch/status for progress.`,
+      total,
+      dry_run: !deleteIfInvalid,
+    });
+
+    let checked = 0, valid = 0, invalid = 0, deleted = 0, errors = 0;
+    const invalidSamples = [];
+    batchValidateProgress = {
+      checked: 0, valid: 0, invalid: 0, deleted: 0, errors: 0,
+      total, done: false, dry_run: !deleteIfInvalid, invalid_samples: [],
+    };
+    console.log(`[validate-batch] Starting batch validation: total=${total}, dry_run=${!deleteIfInvalid}`);
+
+    // Paginated cursor loop to avoid loading all recordings into memory
+    let lastId = '00000000-0000-0000-0000-000000000000';
+    const pageSize = 200;
+
+    while (true) {
+      const { rows: batch } = await pool.query(
+        `SELECT r.id, r.file_path, r.s3_key, r.started_at, c.name AS camera_name
+         FROM recordings r
+         JOIN cameras c ON r.camera_id = c.id
+         ${whereClause} AND r.id > $${idx}
+         ORDER BY r.id
+         LIMIT $${idx + 1}`,
+        [...params, lastId, pageSize]
+      );
+
+      if (batch.length === 0) break;
+      lastId = batch[batch.length - 1].id;
+
+      // Process batch with limited concurrency
+      for (let i = 0; i < batch.length; i += VALIDATE_BATCH_CONCURRENCY) {
+        const chunk = batch.slice(i, i + VALIDATE_BATCH_CONCURRENCY);
+
+        const results = await Promise.allSettled(
+          chunk.map(async (rec) => {
+            const { valid: isValid, reason } = await validateSingleFileFfprobe(rec);
+            return { rec, isValid, reason };
+          })
+        );
+
+        for (const result of results) {
+          checked++;
+          if (result.status === 'rejected') {
+            errors++;
+            continue;
+          }
+          const { rec, isValid, reason } = result.value;
+
+          if (isValid) {
+            valid++;
+          } else {
+            invalid++;
+            if (invalidSamples.length < 20) {
+              invalidSamples.push({
+                id: rec.id,
+                camera: rec.camera_name,
+                started_at: rec.started_at,
+                reason: reason.slice(0, 100),
+              });
+            }
+
+            if (deleteIfInvalid) {
+              // Delete from S3 (best-effort)
+              if (rec.s3_key) {
+                try { await deleteObject(rec.s3_key); } catch { /* ok */ }
+              }
+              // Delete local file if exists
+              if (rec.file_path) {
+                try { if (existsSync(rec.file_path)) unlinkSync(rec.file_path); } catch { /* ok */ }
+              }
+              // Delete from DB
+              try {
+                await pool.query('DELETE FROM recordings WHERE id = $1', [rec.id]);
+                deleted++;
+              } catch { errors++; }
+            }
+          }
+        }
+
+        batchValidateProgress = {
+          checked, valid, invalid, deleted, errors,
+          total, done: false, dry_run: !deleteIfInvalid,
+          invalid_samples: invalidSamples,
+        };
+
+        if (checked % VALIDATE_BATCH_PAUSE_EVERY === 0) {
+          console.log(`[validate-batch] Progress: ${checked}/${total} — ${valid} valid, ${invalid} invalid, ${deleted} deleted, ${errors} errors`);
+          await new Promise(r => setTimeout(r, VALIDATE_BATCH_PAUSE_MS));
+        }
+      }
+    }
+
+    batchValidateProgress = {
+      checked, valid, invalid, deleted, errors,
+      total, done: true, dry_run: !deleteIfInvalid,
+      invalid_samples: invalidSamples,
+    };
+    console.log(`[validate-batch] Complete: ${valid} valid, ${invalid} invalid, ${deleted} deleted, ${errors} errors out of ${total}`);
+    batchValidateRunning = false;
+  } catch (err) {
+    console.error('[validate-batch] Fatal error:', err);
+    batchValidateProgress = { ...batchValidateProgress, done: true };
+    batchValidateRunning = false;
+  }
+});
+
+// GET /api/recordings/validate-batch/status — Check batch validation progress
+router.get('/validate-batch/status', authenticate, authorize('admin'), async (_req, res) => {
+  res.json({ running: batchValidateRunning, progress: batchValidateProgress });
+});
+
 // POST /api/recordings/:id/validate — Validate that a recording is a playable
 // MP4 (moov atom present, video stream decodable). Optionally deletes the
 // recording from S3 + DB if it's corrupted.
