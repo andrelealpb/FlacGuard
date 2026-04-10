@@ -1,12 +1,13 @@
 import { Router } from 'express';
-import { existsSync, statSync, createReadStream } from 'fs';
+import { existsSync, statSync, createReadStream, unlinkSync } from 'fs';
 import { basename } from 'path';
+import { spawnSync } from 'child_process';
 import { pool } from '../db/pool.js';
 import { authenticate, authorize } from '../services/auth.js';
 import { cleanupCamera, cleanupAllCameras } from '../services/cleanup.js';
 import { detectFaces, searchFace } from '../services/face-recognition.js';
 import { getTenantId } from '../services/tenant.js';
-import { getPresignedUrl } from '../services/storage.js';
+import { getPresignedUrl, deleteObject } from '../services/storage.js';
 
 const router = Router();
 
@@ -401,6 +402,124 @@ router.post('/search-by-embedding', authenticate, async (req, res) => {
     grouped.sort((a, b) => new Date(b.first_seen).getTime() - new Date(a.first_seen).getTime());
 
     res.json({ total: grouped.length, total_raw: appearances.length, appearances: grouped });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/recordings/:id/validate — Validate that a recording is a playable
+// MP4 (moov atom present, video stream decodable). Optionally deletes the
+// recording from S3 + DB if it's corrupted.
+//
+// Use this to clean up old recordings that were recorded with the broken
+// +faststart settings (before the fragmented MP4 fix). Body params:
+//   delete_if_invalid: boolean — if true, removes corrupted recordings
+//                                from S3 storage and the database.
+//
+// Returns: { id, valid, action: 'kept'|'deleted'|'error', details }
+router.post('/:id/validate', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const tenantId = getTenantId(req);
+    const deleteIfInvalid = req.body?.delete_if_invalid === true;
+
+    const { rows } = await pool.query(
+      `SELECT r.id, r.file_path, r.s3_key, c.name AS camera_name
+       FROM recordings r
+       JOIN cameras c ON r.camera_id = c.id
+       WHERE r.id = $1 AND c.tenant_id = $2`,
+      [req.params.id, tenantId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Recording not found' });
+    }
+
+    const rec = rows[0];
+
+    // Decide which source to validate: S3 (presigned URL) or local file
+    let probeTarget = null;
+    let source = null;
+    if (rec.s3_key) {
+      try {
+        probeTarget = await getPresignedUrl(rec.s3_key, 600);
+        source = 's3';
+      } catch (err) {
+        return res.json({
+          id: rec.id,
+          valid: false,
+          action: 'error',
+          details: `Failed to generate S3 presigned URL: ${err.message}`,
+        });
+      }
+    } else if (rec.file_path && existsSync(rec.file_path)) {
+      probeTarget = rec.file_path;
+      source = 'local';
+    } else {
+      // No file anywhere — orphaned record
+      if (deleteIfInvalid) {
+        await pool.query('DELETE FROM recordings WHERE id = $1', [rec.id]);
+        return res.json({
+          id: rec.id,
+          valid: false,
+          action: 'deleted',
+          details: 'Orphaned record (no file in S3 or local disk)',
+        });
+      }
+      return res.json({
+        id: rec.id,
+        valid: false,
+        action: 'kept',
+        details: 'Orphaned record (no file in S3 or local disk)',
+      });
+    }
+
+    // Run ffprobe — checks moov atom presence and video stream decodability
+    const probe = spawnSync('ffprobe', [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=codec_type',
+      '-of', 'csv=p=0',
+      probeTarget,
+    ], { timeout: 30_000 });
+
+    const stdout = String(probe.stdout || '').trim();
+    const stderr = String(probe.stderr || '').trim().slice(0, 300);
+    const isValid = probe.status === 0 && stdout === 'video';
+
+    if (isValid) {
+      return res.json({
+        id: rec.id,
+        valid: true,
+        action: 'kept',
+        details: `Valid MP4 (source=${source})`,
+      });
+    }
+
+    // Invalid recording
+    if (!deleteIfInvalid) {
+      return res.json({
+        id: rec.id,
+        valid: false,
+        action: 'kept',
+        details: `Invalid MP4 (source=${source}): ${stderr || 'no video stream'}`,
+      });
+    }
+
+    // Delete from S3 (best-effort) and from DB
+    if (rec.s3_key) {
+      try { await deleteObject(rec.s3_key); } catch { /* best-effort */ }
+    }
+    if (rec.file_path) {
+      try { if (existsSync(rec.file_path)) unlinkSync(rec.file_path); } catch { /* ok */ }
+    }
+    await pool.query('DELETE FROM recordings WHERE id = $1', [rec.id]);
+
+    return res.json({
+      id: rec.id,
+      valid: false,
+      action: 'deleted',
+      details: `Invalid MP4 (source=${source}): ${stderr || 'no video stream'}`,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
