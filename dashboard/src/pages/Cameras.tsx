@@ -67,6 +67,48 @@ interface DiskUsageMap {
   [cameraId: string]: DiskUsageEntry;
 }
 
+interface RecordingHealth {
+  camera_id: string;
+  camera_name: string;
+  pdv_name: string | null;
+  current_status: string;
+  succeeded: number;
+  failed: number;
+  total: number;
+  failure_rate: number;
+  status: "healthy" | "warning" | "critical";
+  last_failure_at: string | null;
+  last_failure_reason: string | null;
+}
+
+interface HealthMap {
+  [cameraId: string]: RecordingHealth;
+}
+
+interface FailureEvent {
+  id: string;
+  reason: string;
+  file_size: number | null;
+  duration_seconds: number | null;
+  started_at: string;
+  created_at: string;
+}
+
+interface DailySeriesEntry {
+  date: string;
+  succeeded: number;
+  failed: number;
+}
+
+interface FailureDetail {
+  camera_id: string;
+  camera_name: string;
+  pdv_name: string | null;
+  days: number;
+  recent_failures: FailureEvent[];
+  daily_series: DailySeriesEntry[];
+}
+
 const emptyForm: CameraForm = {
   name: "",
   model: "iM5 SC",
@@ -524,6 +566,10 @@ function Cameras() {
   const [filterPdv, setFilterPdv] = useState("");
   const [infoCamera, setInfoCamera] = useState<Camera | null>(null);
   const [diskUsage, setDiskUsage] = useState<DiskUsageMap>({});
+  const [healthMap, setHealthMap] = useState<HealthMap>({});
+  const [healthDetailCamera, setHealthDetailCamera] = useState<RecordingHealth | null>(null);
+  const [healthDetail, setHealthDetail] = useState<FailureDetail | null>(null);
+  const [healthDetailLoading, setHealthDetailLoading] = useState(false);
 
   const loadData = () => {
     Promise.all([
@@ -531,8 +577,9 @@ function Cameras() {
       apiFetch("/api/pdvs").then((r) => r.json()),
       apiFetch("/api/cameras/models").then((r) => r.json()),
       apiFetch("/api/cameras/disk-usage").then((r) => r.json()),
+      apiFetch("/api/cameras/recording-health?days=7").then((r) => r.json()).catch(() => ({ cameras: [] })),
     ])
-      .then(([cams, pdvList, modelList, usage]) => {
+      .then(([cams, pdvList, modelList, usage, health]) => {
         setCameras(cams);
         setPdvs(pdvList);
         setModels(modelList);
@@ -548,8 +595,25 @@ function Cameras() {
           };
         }
         setDiskUsage(usageMap);
+
+        const healthMapNew: HealthMap = {};
+        for (const h of health?.cameras || []) healthMapNew[h.camera_id] = h;
+        setHealthMap(healthMapNew);
       })
       .catch(console.error);
+  };
+
+  const openHealthDetail = async (h: RecordingHealth) => {
+    setHealthDetailCamera(h);
+    setHealthDetail(null);
+    setHealthDetailLoading(true);
+    try {
+      const res = await apiFetch(`/api/cameras/${h.camera_id}/recording-failures?days=7`);
+      const data = await res.json();
+      if (res.ok) setHealthDetail(data);
+    } catch { /* ignore */ } finally {
+      setHealthDetailLoading(false);
+    }
   };
 
   useEffect(loadData, []);
@@ -988,6 +1052,7 @@ function Cameras() {
                 <th style={{ padding: "0.75rem 1rem" }}>Gravação</th>
                 <th style={{ padding: "0.75rem 1rem" }}>Retenção</th>
                 <th style={{ padding: "0.75rem 1rem" }}>Disco</th>
+                <th style={{ padding: "0.75rem 1rem" }} title="Taxa de falha nas gravações nos últimos 7 dias">Saúde</th>
                 <th style={{ padding: "0.75rem 1rem" }}>Ações</th>
               </tr>
             </thead>
@@ -1066,6 +1131,45 @@ function Cameras() {
                       )}
                     </td>
                     <td style={{ padding: "0.6rem 1rem" }}>
+                      {(() => {
+                        const h = healthMap[cam.id];
+                        if (!h || h.total === 0) {
+                          return <span style={{ color: "#999", fontSize: "0.75rem" }}>—</span>;
+                        }
+                        const { bg, fg, label } =
+                          h.status === "healthy" ? { bg: "#e8f5e9", fg: "#2e7d32", label: "OK" }
+                          : h.status === "warning" ? { bg: "#fff8e1", fg: "#e67e00", label: "Alerta" }
+                          : { bg: "#ffebee", fg: "#c62828", label: "Crítico" };
+                        return (
+                          <button
+                            onClick={() => openHealthDetail(h)}
+                            title={`${h.succeeded} ok / ${h.failed} falhas nos últimos 7 dias`}
+                            style={{
+                              padding: "0.2rem 0.5rem",
+                              borderRadius: "4px",
+                              border: "1px solid " + fg + "30",
+                              background: bg,
+                              color: fg,
+                              fontSize: "0.75rem",
+                              fontWeight: 600,
+                              cursor: "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "0.3rem",
+                            }}
+                          >
+                            {label}
+                            <span style={{ opacity: 0.75, fontWeight: 400 }}>{h.failure_rate}%</span>
+                            {h.failed > 0 && (
+                              <span style={{ opacity: 0.6, fontWeight: 400 }}>
+                                ({h.failed})
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })()}
+                    </td>
+                    <td style={{ padding: "0.6rem 1rem" }}>
                       <div style={{ display: "flex", gap: "0.3rem" }}>
                         <button
                           onClick={() => handleInfo(cam)}
@@ -1094,6 +1198,159 @@ function Cameras() {
       {infoCamera && (
         <CameraInfoModal camera={infoCamera} onClose={() => setInfoCamera(null)} />
       )}
+
+      {/* Recording Health Detail Modal */}
+      {healthDetailCamera && (
+        <HealthDetailModal
+          summary={healthDetailCamera}
+          detail={healthDetail}
+          loading={healthDetailLoading}
+          onClose={() => { setHealthDetailCamera(null); setHealthDetail(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function formatReason(reason: string): string {
+  switch (reason) {
+    case "invalid_mp4": return "MP4 inválido (moov ausente)";
+    case "too_small": return "Arquivo muito pequeno";
+    case "missing_file": return "Arquivo ausente";
+    case "s3_upload_failed": return "Falha ao enviar para S3";
+    default: return reason;
+  }
+}
+
+function HealthDetailModal({
+  summary, detail, loading, onClose,
+}: {
+  summary: RecordingHealth;
+  detail: FailureDetail | null;
+  loading: boolean;
+  onClose: () => void;
+}) {
+  const series = detail?.daily_series || [];
+  const maxY = Math.max(1, ...series.map(d => d.succeeded + d.failed));
+  const statusColor = summary.status === "healthy" ? "#2e7d32"
+    : summary.status === "warning" ? "#e67e00"
+    : "#c62828";
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000,
+        display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "#fff", borderRadius: "8px", width: "min(820px, 95%)",
+          maxHeight: "90vh", overflow: "auto", padding: "1.5rem",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "1rem" }}>
+          <div>
+            <h3 style={{ margin: 0 }}>Saúde de gravações — {summary.camera_name}</h3>
+            <div style={{ fontSize: "0.85rem", color: "#666", marginTop: "0.2rem" }}>
+              {summary.pdv_name || "—"} · últimos 7 dias
+            </div>
+          </div>
+          <button onClick={onClose} style={{
+            background: "transparent", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "#666",
+          }}>×</button>
+        </div>
+
+        {/* Summary cards */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem", marginBottom: "1.25rem" }}>
+          <div style={{ background: "#f5f5f5", padding: "0.75rem", borderRadius: "6px", textAlign: "center" }}>
+            <div style={{ fontSize: "1.4rem", fontWeight: 700 }}>{summary.total}</div>
+            <div style={{ fontSize: "0.75rem", color: "#666" }}>Total</div>
+          </div>
+          <div style={{ background: "#e8f5e9", padding: "0.75rem", borderRadius: "6px", textAlign: "center" }}>
+            <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "#2e7d32" }}>{summary.succeeded}</div>
+            <div style={{ fontSize: "0.75rem", color: "#666" }}>OK</div>
+          </div>
+          <div style={{ background: "#ffebee", padding: "0.75rem", borderRadius: "6px", textAlign: "center" }}>
+            <div style={{ fontSize: "1.4rem", fontWeight: 700, color: "#c62828" }}>{summary.failed}</div>
+            <div style={{ fontSize: "0.75rem", color: "#666" }}>Falharam</div>
+          </div>
+          <div style={{ background: "#fff", padding: "0.75rem", borderRadius: "6px", textAlign: "center", border: "2px solid " + statusColor }}>
+            <div style={{ fontSize: "1.4rem", fontWeight: 700, color: statusColor }}>{summary.failure_rate}%</div>
+            <div style={{ fontSize: "0.75rem", color: "#666" }}>Taxa de falha</div>
+          </div>
+        </div>
+
+        {/* Daily chart */}
+        <div style={{ marginBottom: "1.25rem" }}>
+          <div style={{ fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.5rem" }}>Gravações por dia (verde = ok, vermelho = falha)</div>
+          {loading ? (
+            <div style={{ padding: "1rem", textAlign: "center", color: "#999" }}>Carregando…</div>
+          ) : series.length === 0 ? (
+            <div style={{ padding: "1rem", textAlign: "center", color: "#999" }}>Sem dados no período</div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "flex-end", gap: "0.35rem", height: "140px", borderBottom: "1px solid #ddd", paddingBottom: "0.25rem" }}>
+              {series.map((d) => {
+                const okH = (d.succeeded / maxY) * 120;
+                const failH = (d.failed / maxY) * 120;
+                const label = d.date.slice(5);
+                return (
+                  <div key={d.date} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "0.15rem" }}>
+                    <div style={{ display: "flex", flexDirection: "column-reverse", width: "100%", height: "120px", justifyContent: "flex-start" }}>
+                      <div style={{ background: "#4caf50", height: `${okH}px`, borderRadius: "2px 2px 0 0" }} title={`${d.succeeded} ok`} />
+                      <div style={{ background: "#c62828", height: `${failH}px`, borderRadius: failH && !okH ? "2px 2px 0 0" : 0 }} title={`${d.failed} falhas`} />
+                    </div>
+                    <div style={{ fontSize: "0.65rem", color: "#666" }}>{label}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Recent failures */}
+        <div>
+          <div style={{ fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.5rem" }}>Últimas falhas</div>
+          {loading ? (
+            <div style={{ padding: "1rem", textAlign: "center", color: "#999" }}>Carregando…</div>
+          ) : !detail || detail.recent_failures.length === 0 ? (
+            <div style={{ padding: "1rem", textAlign: "center", color: "#999", background: "#fafafa", borderRadius: "4px" }}>
+              Nenhuma falha nos últimos 7 dias 🎉
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", fontSize: "0.8rem", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "#f5f5f5", textAlign: "left" }}>
+                    <th style={{ padding: "0.4rem 0.6rem" }}>Quando</th>
+                    <th style={{ padding: "0.4rem 0.6rem" }}>Motivo</th>
+                    <th style={{ padding: "0.4rem 0.6rem" }}>Tamanho</th>
+                    <th style={{ padding: "0.4rem 0.6rem" }}>Duração</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.recent_failures.map((f) => (
+                    <tr key={f.id} style={{ borderTop: "1px solid #eee" }}>
+                      <td style={{ padding: "0.35rem 0.6rem" }}>
+                        {new Date(f.created_at).toLocaleString("pt-BR")}
+                      </td>
+                      <td style={{ padding: "0.35rem 0.6rem" }}>{formatReason(f.reason)}</td>
+                      <td style={{ padding: "0.35rem 0.6rem", fontFamily: "monospace" }}>
+                        {f.file_size ? `${(f.file_size / 1024).toFixed(0)} KB` : "—"}
+                      </td>
+                      <td style={{ padding: "0.35rem 0.6rem", fontFamily: "monospace" }}>
+                        {f.duration_seconds != null ? `${f.duration_seconds}s` : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

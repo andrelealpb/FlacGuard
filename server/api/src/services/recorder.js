@@ -46,6 +46,31 @@ function isValidMp4(filePath) {
 }
 
 /**
+ * Log a failed recording attempt so we can surface per-camera health
+ * stats (recording_failures table). Non-fatal: any DB error is swallowed.
+ */
+async function logRecordingFailure(cameraId, reason, { fileSize, durationSec, startedAt }) {
+  try {
+    // Fetch tenant_id from the camera. Cached query would be better long-term
+    // but failures are infrequent so a fresh lookup is fine.
+    const { rows } = await pool.query('SELECT tenant_id FROM cameras WHERE id = $1', [cameraId]);
+    const tenantId = rows[0]?.tenant_id;
+    if (!tenantId) return;
+
+    await pool.query(
+      `INSERT INTO recording_failures (camera_id, tenant_id, reason, file_size, duration_seconds, started_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [cameraId, tenantId, reason, fileSize ?? null, durationSec ?? null, startedAt]
+    );
+  } catch (err) {
+    // Non-fatal — don't let health logging break the recording pipeline
+    if (Math.random() < 0.1) {
+      console.error(`[Recorder] Failed to log recording failure for camera ${cameraId}:`, err.message);
+    }
+  }
+}
+
+/**
  * Start an FFmpeg recording for a camera.
  * Uses HLS as source (includes ~12s pre-buffer from HLS segments).
  */
@@ -138,6 +163,7 @@ export function startRecording(camera, recordingType = 'motion', thumbnailPath =
               console.log(`[Recorder] S3 upload complete for ${name}: ${s3Result.s3Key}`);
             } else {
               console.error(`[Recorder] S3 upload FAILED for ${name}: ${filePath} — file kept on local disk`);
+              logRecordingFailure(id, 's3_upload_failed', { fileSize, durationSec, startedAt }).catch(() => {});
             }
           } else {
             console.warn(`[Recorder] No tenant_id for camera ${name} (id=${id}), skipping S3 upload`);
@@ -150,14 +176,24 @@ export function startRecording(camera, recordingType = 'motion', thumbnailPath =
       }
     } else {
       // Recording was rejected: too small, missing, or corrupted MP4.
-      // Clean up the broken file from disk so it doesn't accumulate.
-      let reason = 'missing or empty';
-      if (fileSize && fileSize <= 10240) reason = `too small (${fileSize} bytes)`;
-      else if (fileSize && fileSize > 10240) reason = 'invalid MP4 (no moov atom or no video stream)';
+      // Clean up the broken file from disk so it doesn't accumulate, and
+      // log the failure so the dashboard can surface problem cameras.
+      let reason, dbReason;
+      if (!fileSize) {
+        reason = 'missing or empty';
+        dbReason = 'missing_file';
+      } else if (fileSize <= 10240) {
+        reason = `too small (${fileSize} bytes)`;
+        dbReason = 'too_small';
+      } else {
+        reason = 'invalid MP4 (no moov atom or no video stream)';
+        dbReason = 'invalid_mp4';
+      }
       console.log(`[Recorder] Camera ${name}: recording discarded — ${reason}`);
       try {
         if (existsSync(filePath)) unlinkSync(filePath);
       } catch { /* ignore */ }
+      logRecordingFailure(id, dbReason, { fileSize, durationSec, startedAt }).catch(() => {});
     }
   });
 
