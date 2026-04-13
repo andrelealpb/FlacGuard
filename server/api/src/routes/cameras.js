@@ -345,6 +345,79 @@ router.get('/availability', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/cameras/recording-health?days=7 — Per-camera recording health stats.
+// Combines successful recordings (from recordings table) with failed attempts
+// (from recording_failures) to compute failure_rate per camera. Returns:
+//   { camera_id, camera_name, pdv_name, total, succeeded, failed,
+//     failure_rate, status: 'healthy'|'warning'|'critical',
+//     last_failure_at, last_failure_reason }
+router.get('/recording-health', authenticate, async (req, res) => {
+  try {
+    const tenantId = getTenantId(req);
+    const days = Math.max(1, Math.min(90, parseInt(req.query.days, 10) || 7));
+    const windowStart = `now() - ($2 || ' days')::interval`;
+
+    const { rows } = await pool.query(
+      `WITH succ AS (
+         SELECT r.camera_id, count(*)::int AS succeeded
+         FROM recordings r
+         JOIN cameras c ON c.id = r.camera_id
+         WHERE c.tenant_id = $1
+           AND r.started_at >= ${windowStart}
+         GROUP BY r.camera_id
+       ),
+       fail AS (
+         SELECT camera_id,
+                count(*)::int AS failed,
+                max(created_at) AS last_failure_at,
+                (array_agg(reason ORDER BY created_at DESC))[1] AS last_failure_reason
+         FROM recording_failures
+         WHERE tenant_id = $1
+           AND created_at >= ${windowStart}
+         GROUP BY camera_id
+       )
+       SELECT
+         c.id AS camera_id,
+         c.name AS camera_name,
+         p.name AS pdv_name,
+         c.status AS current_status,
+         COALESCE(s.succeeded, 0) AS succeeded,
+         COALESCE(f.failed, 0) AS failed,
+         COALESCE(s.succeeded, 0) + COALESCE(f.failed, 0) AS total,
+         CASE
+           WHEN COALESCE(s.succeeded, 0) + COALESCE(f.failed, 0) = 0 THEN 0
+           ELSE round(
+             100.0 * COALESCE(f.failed, 0)
+             / (COALESCE(s.succeeded, 0) + COALESCE(f.failed, 0))::numeric, 1
+           )
+         END AS failure_rate,
+         f.last_failure_at,
+         f.last_failure_reason
+       FROM cameras c
+       LEFT JOIN pdvs p ON p.id = c.pdv_id
+       LEFT JOIN succ s ON s.camera_id = c.id
+       LEFT JOIN fail f ON f.camera_id = c.id
+       WHERE c.tenant_id = $1
+       ORDER BY failure_rate DESC, failed DESC`,
+      [tenantId, String(days)]
+    );
+
+    // Classify status server-side so the frontend doesn't need thresholds
+    const classified = rows.map(r => {
+      let status = 'healthy';
+      const rate = parseFloat(r.failure_rate) || 0;
+      if (rate >= 10) status = 'critical';
+      else if (rate >= 2) status = 'warning';
+      return { ...r, failure_rate: rate, status };
+    });
+
+    res.json({ days, cameras: classified });
+  } catch (err) {
+    console.error('[recording-health] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/:id', authenticate, async (req, res) => {
   try {
     const tenantId = getTenantId(req);
@@ -489,6 +562,84 @@ router.get('/:id/live', authenticate, async (req, res) => {
       status,
     });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/cameras/:id/recording-failures?days=7 — Drill-down per camera.
+// Returns the latest failure events and a daily time series of
+// successful vs failed recordings for charting.
+router.get('/:id/recording-failures', authenticate, async (req, res) => {
+  try {
+    const tenantId = getTenantId(req);
+    const cameraId = req.params.id;
+    const days = Math.max(1, Math.min(90, parseInt(req.query.days, 10) || 7));
+    const windowStart = `now() - ($3 || ' days')::interval`;
+
+    // Ownership check (also gets camera name/pdv for the response)
+    const { rows: camRows } = await pool.query(
+      `SELECT c.id, c.name AS camera_name, p.name AS pdv_name
+       FROM cameras c LEFT JOIN pdvs p ON p.id = c.pdv_id
+       WHERE c.id = $1 AND c.tenant_id = $2`,
+      [cameraId, tenantId]
+    );
+    if (camRows.length === 0) {
+      return res.status(404).json({ error: 'Camera not found' });
+    }
+
+    const { rows: recent } = await pool.query(
+      `SELECT id, reason, file_size, duration_seconds, started_at, created_at
+       FROM recording_failures
+       WHERE camera_id = $1 AND tenant_id = $2
+         AND created_at >= ${windowStart}
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [cameraId, tenantId, String(days)]
+    );
+
+    // Daily series combining successes (recordings) and failures
+    const { rows: series } = await pool.query(
+      `WITH days AS (
+         SELECT generate_series(
+           (now() - ($3 || ' days')::interval)::date,
+           now()::date,
+           '1 day'
+         )::date AS d
+       ),
+       succ AS (
+         SELECT started_at::date AS d, count(*)::int AS succeeded
+         FROM recordings
+         WHERE camera_id = $1
+           AND started_at >= ${windowStart}
+         GROUP BY 1
+       ),
+       fail AS (
+         SELECT created_at::date AS d, count(*)::int AS failed
+         FROM recording_failures
+         WHERE camera_id = $1 AND tenant_id = $2
+           AND created_at >= ${windowStart}
+         GROUP BY 1
+       )
+       SELECT to_char(days.d, 'YYYY-MM-DD') AS date,
+              COALESCE(succ.succeeded, 0) AS succeeded,
+              COALESCE(fail.failed, 0) AS failed
+       FROM days
+       LEFT JOIN succ ON succ.d = days.d
+       LEFT JOIN fail ON fail.d = days.d
+       ORDER BY days.d ASC`,
+      [cameraId, tenantId, String(days)]
+    );
+
+    res.json({
+      camera_id: camRows[0].id,
+      camera_name: camRows[0].camera_name,
+      pdv_name: camRows[0].pdv_name,
+      days,
+      recent_failures: recent,
+      daily_series: series,
+    });
+  } catch (err) {
+    console.error('[recording-failures] Error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
