@@ -68,17 +68,16 @@ export function startRecording(camera, recordingType = 'motion', thumbnailPath =
   // Use HLS as source: FFmpeg will start from the earliest available segment
   // With hls_playlist_length=60 and hls_fragment=3, we get ~24s of pre-buffer
   //
-  // Use FRAGMENTED MP4 instead of +faststart so the file remains playable
-  // even if ffmpeg is interrupted (camera disconnect, SIGKILL, deploy).
-  // With +faststart, the moov atom is only written when ffmpeg finishes
-  // normally — if interrupted, the moov is missing and the file cannot
-  // be played. With frag_keyframe+empty_moov+default_base_moof, each
-  // fragment carries its own metadata, so partial recordings are valid.
+  // Uses +faststart for broad compatibility. This moves the moov atom to the
+  // beginning only when ffmpeg exits cleanly — if interrupted (SIGKILL, OOM,
+  // camera disconnect), the file ends up without a moov and is unplayable.
+  // The post-recording ffprobe validation below catches those cases and
+  // discards the broken files before they reach the database/S3.
   const ffmpegArgs = [
     '-live_start_index', '-8',  // Start 8 segments back (~24s pre-buffer)
     '-i', hlsUrl,
     '-c', 'copy',               // No re-encoding
-    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    '-movflags', '+faststart',   // Optimize for web playback
     '-f', 'mp4',
     '-loglevel', 'warning',
     '-y',
