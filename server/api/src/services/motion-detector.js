@@ -7,17 +7,51 @@ import { updateTracksFromResponse, finalizeStaleTracks, finalizeAllTracksForCame
 // Per-camera state
 const cameraStates = new Map();
 
-// Face service availability (checked periodically)
+// Face service availability (checked periodically).
+// Telemetry is exported so /api/internal/health/face-service can report uptime
+// of the flag — which is what actually gates real YOLO checks.
 let faceServiceAvailable = false;
+const faceServiceTelemetry = {
+  available: false,
+  lastTransitionAt: null,
+  lastUpAt: null,
+  lastDownAt: null,
+  checksOk: 0,
+  checksFail: 0,
+  transitionsUp: 0,
+  transitionsDown: 0,
+};
+
 async function checkFaceService() {
-  faceServiceAvailable = await isFaceServiceHealthy();
-  if (faceServiceAvailable) {
-    console.log('[Face] Face detection service is available');
+  const previous = faceServiceAvailable;
+  const now = await isFaceServiceHealthy();
+  faceServiceAvailable = now;
+  faceServiceTelemetry.available = now;
+  if (now) {
+    faceServiceTelemetry.checksOk++;
+    faceServiceTelemetry.lastUpAt = new Date().toISOString();
+  } else {
+    faceServiceTelemetry.checksFail++;
+    faceServiceTelemetry.lastDownAt = new Date().toISOString();
+  }
+  if (previous !== now) {
+    faceServiceTelemetry.lastTransitionAt = new Date().toISOString();
+    if (now) {
+      faceServiceTelemetry.transitionsUp++;
+      console.log('[Face] Face detection service RECOVERED (flag true)');
+    } else {
+      faceServiceTelemetry.transitionsDown++;
+      console.warn('[Face] Face detection service UNREACHABLE (flag false) — falling back');
+    }
   }
 }
 // Check every 30s
 setInterval(checkFaceService, 30000);
 setTimeout(checkFaceService, 5000); // Initial check after 5s
+
+export function getFaceServiceTelemetry() {
+  return { ...faceServiceTelemetry };
+}
 
 // Extract a single frame from HLS stream as raw RGB buffer
 function extractFrame(hlsUrl) {
@@ -326,28 +360,45 @@ async function processCamera(camera) {
               console.log(`[Motion] Camera ${camera.name} (${id}): no person detected (attempt ${state.personCheckAttempts}), skipping...`);
             }
           } else {
-            // Face service not available — fall back to old behavior
-            state.personConfirmed = true;
+            // Face service unreachable — strict fallback: only record if the
+            // pixel change is at least 3x the camera's sensitivity. Protects
+            // against blind recording storms during face-service outages while
+            // still catching clearly significant motion (someone entering).
+            const FALLBACK_CHANGE_MULTIPLIER = 3;
+            const fallbackThreshold = motion_sensitivity * FALLBACK_CHANGE_MULTIPLIER;
+            const passesFallback = changePercent >= fallbackThreshold;
 
-            await pool.query(
-              `INSERT INTO events (camera_id, type, payload)
-               VALUES ($1, 'motion', $2)`,
-              [id, JSON.stringify({
-                change_percent: parseFloat(changePercent.toFixed(1)),
-                sensitivity: motion_sensitivity,
-                action: 'start',
-                person_detected: null,
-              })]
-            );
+            if (!passesFallback) {
+              // Don't flip motionActive — let the next cycle re-evaluate fresh
+              state.motionActive = false;
+              state.motionStartAt = null;
+              state.personCheckAttempts = 0;
+              console.log(`[Motion] Camera ${camera.name} (${id}): face-service down, change ${changePercent.toFixed(1)}% < ${fallbackThreshold}% (3x sensibility) — skipping`);
+            } else {
+              state.personConfirmed = true;
+              console.warn(`[Motion] Camera ${camera.name} (${id}): face-service down, strict fallback TRIGGERED (change ${changePercent.toFixed(1)}% >= ${fallbackThreshold}%)`);
 
-            if (recording_mode === 'motion') {
-              try {
-                const thumbnailPath = `/data/recordings/${stream_key}-thumb-${Date.now()}.jpg`;
-                await saveFrameAsJpeg(hlsUrl, thumbnailPath);
-                startRecording(camera, 'motion', thumbnailPath);
-              } catch (thumbErr) {
-                console.error(`[Motion] Thumbnail error for ${camera.name}:`, thumbErr.message);
-                startRecording(camera, 'motion', null);
+              await pool.query(
+                `INSERT INTO events (camera_id, type, payload)
+                 VALUES ($1, 'motion', $2)`,
+                [id, JSON.stringify({
+                  change_percent: parseFloat(changePercent.toFixed(1)),
+                  sensitivity: motion_sensitivity,
+                  action: 'start',
+                  person_detected: null,
+                  fallback_reason: 'face_service_unreachable',
+                })]
+              );
+
+              if (recording_mode === 'motion') {
+                try {
+                  const thumbnailPath = `/data/recordings/${stream_key}-thumb-${Date.now()}.jpg`;
+                  await saveFrameAsJpeg(hlsUrl, thumbnailPath);
+                  startRecording(camera, 'motion', thumbnailPath);
+                } catch (thumbErr) {
+                  console.error(`[Motion] Thumbnail error for ${camera.name}:`, thumbErr.message);
+                  startRecording(camera, 'motion', null);
+                }
               }
             }
           }

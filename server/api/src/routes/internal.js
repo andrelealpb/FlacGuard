@@ -2,6 +2,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { pool } from '../db/pool.js';
 import { hashPassword } from '../services/auth.js';
+import { getFaceServiceTelemetry } from '../services/motion-detector.js';
 
 const router = Router();
 
@@ -33,6 +34,34 @@ router.get('/health', async (_req, res) => {
     res.json({ status: 'ok', service: 'flac-guard-node' });
   } catch (err) {
     res.status(503).json({ status: 'error', message: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/internal/health/face-service — Face-service availability telemetry
+// ---------------------------------------------------------------------------
+// Reports the `faceServiceAvailable` flag that actually gates YOLO verification.
+// This is more meaningful than raw /health latency because it's the flag the
+// motion detector reads before every cycle; when false, all recordings fall
+// back to the strict pixel-only path.
+router.get('/health/face-service', async (_req, res) => {
+  try {
+    const t = getFaceServiceTelemetry();
+    const totalChecks = t.checksOk + t.checksFail;
+    const uptime = totalChecks > 0 ? t.checksOk / totalChecks : null;
+    res.json({
+      available: t.available,
+      uptime_ratio: uptime !== null ? parseFloat(uptime.toFixed(4)) : null,
+      checks_ok: t.checksOk,
+      checks_fail: t.checksFail,
+      transitions_up: t.transitionsUp,
+      transitions_down: t.transitionsDown,
+      last_transition_at: t.lastTransitionAt,
+      last_up_at: t.lastUpAt,
+      last_down_at: t.lastDownAt,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

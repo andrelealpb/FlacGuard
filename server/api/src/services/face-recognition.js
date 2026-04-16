@@ -94,7 +94,7 @@ export async function trackPersons(jpegBuffer, cameraId) {
   const res = await fetch(`${FACE_SERVICE_URL}/track-persons`, {
     method: 'POST',
     body: formData,
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(8000),
   });
 
   if (!res.ok) {
@@ -717,7 +717,7 @@ async function getVisitorsByPdvLegacy(pdvIds, from, to) {
  */
 export async function isFaceServiceHealthy() {
   try {
-    const res = await fetch(`${FACE_SERVICE_URL}/health`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${FACE_SERVICE_URL}/health`, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return false;
     const data = await res.json();
     return data.model_loaded === true;

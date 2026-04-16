@@ -47,7 +47,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 8G
 
   dashboard:
     build: ./dashboard
