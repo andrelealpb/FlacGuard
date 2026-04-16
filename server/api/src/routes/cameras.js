@@ -129,15 +129,17 @@ router.get('/disk-usage', authenticate, async (req, res) => {
       if (fixed > 0) console.log(`[DiskUsage] Backfilled file_size for ${fixed}/${missing.length} recordings`);
     }
 
-    // Recording totals per camera
+    // Recording totals per camera. oldest_recording_at comes from the
+    // denormalized column on cameras (kept in sync by trigger, see
+    // migration 015) so we avoid a MIN(started_at) scan per request.
     const { rows: recRows } = await pool.query(
-      `SELECT c.id as camera_id, c.name, c.retention_days,
+      `SELECT c.id as camera_id, c.name, c.retention_days, c.oldest_recording_at,
               COALESCE(SUM(r.file_size), 0)::text as recording_bytes,
               COUNT(r.id)::int as recording_count
        FROM cameras c
        LEFT JOIN recordings r ON r.camera_id = c.id
        WHERE c.tenant_id = $1
-       GROUP BY c.id, c.name, c.retention_days`,
+       GROUP BY c.id, c.name, c.retention_days, c.oldest_recording_at`,
       [tenantId]
     );
 
@@ -160,20 +162,6 @@ router.get('/disk-usage', authenticate, async (req, res) => {
       } catch { /* skip */ }
     }
 
-    // Oldest recording per camera
-    const { rows: oldestRows } = await pool.query(
-      `SELECT r.camera_id, MIN(r.started_at) as oldest_recording_at
-       FROM recordings r
-       JOIN cameras c ON r.camera_id = c.id
-       WHERE c.tenant_id = $1
-       GROUP BY r.camera_id`,
-      [tenantId]
-    );
-    const oldestMap = {};
-    for (const o of oldestRows) {
-      oldestMap[o.camera_id] = o.oldest_recording_at;
-    }
-
     const rows = recRows.map(r => {
       const face = faceSizeMap[r.camera_id] || { bytes: 0, count: 0 };
       const recBytes = parseInt(r.recording_bytes) || 0;
@@ -186,7 +174,7 @@ router.get('/disk-usage', authenticate, async (req, res) => {
         recording_count: r.recording_count,
         face_bytes: String(face.bytes),
         face_count: face.count,
-        oldest_recording_at: oldestMap[r.camera_id] || null,
+        oldest_recording_at: r.oldest_recording_at || null,
       };
     });
     rows.sort((a, b) => parseInt(b.total_bytes) - parseInt(a.total_bytes));
@@ -251,6 +239,38 @@ router.post('/', authenticate, async (req, res) => {
       rtmp_public_url: await getRtmpPublicUrl(camera.stream_key),
       hls_public_url: await getHlsPublicUrl(camera.stream_key),
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/cameras/live-urls — Bulk live URLs for all cameras of a tenant.
+// Control uses this to avoid N round-trips (one per camera) on the Live grid
+// page. See issue andrelealpb/FlacGuard#98.
+// Returns all cameras (including offline) so the Control can render the full
+// grid; clients filter client-side by camera.status.
+router.get('/live-urls', authenticate, async (req, res) => {
+  try {
+    const tenantId = getTenantId(req);
+    const { rows } = await pool.query(
+      `SELECT id, stream_key, status
+       FROM cameras
+       WHERE tenant_id = $1
+       ORDER BY name`,
+      [tenantId]
+    );
+
+    // Resolve public URLs once — getHlsPublicUrl/getRtmpPublicUrl use a
+    // 60s cache internally, so the per-camera calls below are ~free.
+    const result = await Promise.all(rows.map(async (r) => ({
+      id: r.id,
+      status: r.status,
+      hls_url: getHlsUrl(r.stream_key),
+      rtmp_url: getRtmpUrl(r.stream_key),
+      hls_public_url: await getHlsPublicUrl(r.stream_key),
+      rtmp_public_url: await getRtmpPublicUrl(r.stream_key),
+    })));
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
