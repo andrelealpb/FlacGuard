@@ -234,7 +234,7 @@ def _person_guided_detection(img):
 
 
 @app.get("/health")
-def health():
+async def health():
     return {
         "status": "ok",
         "model_loaded": face_app is not None,

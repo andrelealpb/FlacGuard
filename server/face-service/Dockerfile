@@ -34,4 +34,4 @@ RUN python -c "from ultralytics import YOLO; YOLO('yolo26n.pt')" || true
 COPY app.py .
 
 EXPOSE 8001
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "3"]
