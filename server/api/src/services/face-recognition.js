@@ -150,13 +150,17 @@ export async function storeFaceEmbeddings(cameraId, faces, detectedAt, trackedPe
 
     // Save face crop image
     let facePath = null;
+    let faceFileSize = null;
     if (face.face_image_b64) {
       const filename = `face-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
       facePath = join(FACE_DIR, filename);
       try {
-        writeFileSync(facePath, Buffer.from(face.face_image_b64, 'base64'));
+        const buf = Buffer.from(face.face_image_b64, 'base64');
+        writeFileSync(facePath, buf);
+        faceFileSize = buf.length;
       } catch {
         facePath = null;
+        faceFileSize = null;
       }
     }
 
@@ -218,10 +222,10 @@ export async function storeFaceEmbeddings(cameraId, faces, detectedAt, trackedPe
     const trackUuid = matchedTrack ? matchedTrack.track_uuid : null;
 
     const { rows } = await pool.query(
-      `INSERT INTO face_embeddings (camera_id, embedding, face_image, confidence, detected_at, person_id, track_id)
-       VALUES ($1, $2::vector, $3, $4, $5, $6, $7)
+      `INSERT INTO face_embeddings (camera_id, embedding, face_image, confidence, detected_at, person_id, track_id, file_size)
+       VALUES ($1, $2::vector, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
-      [cameraId, embeddingStr, facePath, quality ?? face.confidence, detectedAt || new Date(), personId, trackUuid]
+      [cameraId, embeddingStr, facePath, quality ?? face.confidence, detectedAt || new Date(), personId, trackUuid, faceFileSize]
     );
 
     ids.push(rows[0].id);

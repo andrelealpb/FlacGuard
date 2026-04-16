@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { existsSync, statSync } from 'fs';
 import { pool } from '../db/pool.js';
 import { authenticate } from '../services/auth.js';
 import { generateStreamKey, getHlsUrl, getRtmpUrl, getRtmpPublicUrl, getHlsPublicUrl } from '../services/rtmp.js';
@@ -106,78 +105,25 @@ router.get('/stream-names', authenticate, async (req, res) => {
 router.get('/disk-usage', authenticate, async (req, res) => {
   try {
     const tenantId = getTenantId(req);
-    // Backfill any recordings missing file_size
-    const { rows: missing } = await pool.query(
-      `SELECT r.id, r.file_path FROM recordings r
-       JOIN cameras c ON r.camera_id = c.id
-       WHERE (r.file_size IS NULL OR r.file_size = 0) AND c.tenant_id = $1`,
-      [tenantId]
-    );
-    if (missing.length > 0) {
-      let fixed = 0;
-      for (const rec of missing) {
-        try {
-          if (rec.file_path && existsSync(rec.file_path)) {
-            const size = statSync(rec.file_path).size;
-            if (size > 0) {
-              await pool.query('UPDATE recordings SET file_size = $1 WHERE id = $2', [size, rec.id]);
-              fixed++;
-            }
-          }
-        } catch { /* skip */ }
-      }
-      if (fixed > 0) console.log(`[DiskUsage] Backfilled file_size for ${fixed}/${missing.length} recordings`);
-    }
 
-    // Recording totals per camera. oldest_recording_at comes from the
-    // denormalized column on cameras (kept in sync by trigger, see
-    // migration 015) so we avoid a MIN(started_at) scan per request.
-    const { rows: recRows } = await pool.query(
-      `SELECT c.id as camera_id, c.name, c.retention_days, c.oldest_recording_at,
-              COALESCE(SUM(r.file_size), 0)::text as recording_bytes,
-              COUNT(r.id)::int as recording_count
-       FROM cameras c
-       LEFT JOIN recordings r ON r.camera_id = c.id
-       WHERE c.tenant_id = $1
-       GROUP BY c.id, c.name, c.retention_days, c.oldest_recording_at`,
+    // All counters (recording_count/bytes, face_count/bytes) and
+    // oldest_recording_at are denormalized on cameras and kept in sync
+    // via triggers on recordings/face_embeddings. See migrations 015 and 016.
+    // No SUM/COUNT scan or disk statSync per request.
+    const { rows } = await pool.query(
+      `SELECT id AS camera_id, name, retention_days,
+              recording_bytes::text AS recording_bytes,
+              recording_count,
+              face_bytes::text AS face_bytes,
+              face_count,
+              (recording_bytes + face_bytes)::text AS total_bytes,
+              oldest_recording_at
+       FROM cameras
+       WHERE tenant_id = $1
+       ORDER BY (recording_bytes + face_bytes) DESC`,
       [tenantId]
     );
 
-    // Face image sizes per camera — scan face_image paths on disk
-    const { rows: faceRows } = await pool.query(
-      `SELECT fe.camera_id, fe.face_image FROM face_embeddings fe
-       JOIN cameras c ON fe.camera_id = c.id
-       WHERE fe.face_image IS NOT NULL AND c.tenant_id = $1`,
-      [tenantId]
-    );
-    const faceSizeMap = {};   // camera_id -> { bytes, count }
-    for (const f of faceRows) {
-      try {
-        if (f.face_image && existsSync(f.face_image)) {
-          const sz = statSync(f.face_image).size;
-          if (!faceSizeMap[f.camera_id]) faceSizeMap[f.camera_id] = { bytes: 0, count: 0 };
-          faceSizeMap[f.camera_id].bytes += sz;
-          faceSizeMap[f.camera_id].count++;
-        }
-      } catch { /* skip */ }
-    }
-
-    const rows = recRows.map(r => {
-      const face = faceSizeMap[r.camera_id] || { bytes: 0, count: 0 };
-      const recBytes = parseInt(r.recording_bytes) || 0;
-      return {
-        camera_id: r.camera_id,
-        name: r.name,
-        retention_days: r.retention_days,
-        total_bytes: String(recBytes + face.bytes),
-        recording_bytes: r.recording_bytes,
-        recording_count: r.recording_count,
-        face_bytes: String(face.bytes),
-        face_count: face.count,
-        oldest_recording_at: r.oldest_recording_at || null,
-      };
-    });
-    rows.sort((a, b) => parseInt(b.total_bytes) - parseInt(a.total_bytes));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
