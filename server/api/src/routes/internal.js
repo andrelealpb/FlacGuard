@@ -2,7 +2,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { pool } from '../db/pool.js';
 import { hashPassword } from '../services/auth.js';
-import { getFaceServiceTelemetry } from '../services/motion-detector.js';
+import { getFaceServiceTelemetry, getCamerasHealth } from '../services/motion-detector.js';
 
 const router = Router();
 
@@ -44,6 +44,56 @@ router.get('/health', async (_req, res) => {
 // This is more meaningful than raw /health latency because it's the flag the
 // motion detector reads before every cycle; when false, all recordings fall
 // back to the strict pixel-only path.
+// ---------------------------------------------------------------------------
+// GET /api/internal/cameras/health — Per-camera stream health snapshot
+// ---------------------------------------------------------------------------
+// Returns stream extraction stats per camera so the Control dashboard can
+// flag cameras with flaky Wi-Fi ("internet ruim" badge) and alert the user.
+// `flaky=true` means sustained HLS extraction failures (>= 50 in 24h).
+// Joined with camera metadata (name, pdv) for display.
+router.get('/cameras/health', async (_req, res) => {
+  try {
+    const telemetry = getCamerasHealth();
+    if (telemetry.length === 0) {
+      return res.json({ cameras: [] });
+    }
+    const ids = telemetry.map((t) => t.camera_id);
+    const { rows } = await pool.query(
+      `SELECT c.id, c.name, c.model, c.tenant_id, c.status, c.last_seen_at,
+              p.id AS pdv_id, p.name AS pdv_name
+       FROM cameras c
+       LEFT JOIN pdvs p ON p.id = c.pdv_id
+       WHERE c.id = ANY($1::uuid[])`,
+      [ids]
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const cameras = telemetry.map((t) => {
+      const meta = byId.get(t.camera_id) || {};
+      return {
+        camera_id: t.camera_id,
+        name: meta.name || null,
+        model: meta.model || null,
+        status: meta.status || null,
+        tenant_id: meta.tenant_id || null,
+        pdv: meta.pdv_id ? { id: meta.pdv_id, name: meta.pdv_name } : null,
+        last_seen_at: meta.last_seen_at,
+        stream_health: {
+          flaky: t.flaky,
+          consecutive_fails: t.consecutive_fails,
+          total_fails_24h: t.total_fails_24h,
+          in_backoff: t.in_backoff,
+          backoff_ms_remaining: t.backoff_ms_remaining,
+          last_success_at: t.last_success_at,
+        },
+      };
+    });
+    res.json({ cameras });
+  } catch (err) {
+    console.error('[Internal] Cameras health error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/health/face-service', async (_req, res) => {
   try {
     const t = getFaceServiceTelemetry();
