@@ -1,5 +1,4 @@
 import { spawn } from 'child_process';
-import jpeg from 'jpeg-js';
 import { pool } from '../db/pool.js';
 import { startRecording, stopRecording, isRecording } from './recorder.js';
 import { detectFaces, trackPersons, storeFaceEmbeddings, checkWatchlist, isFaceServiceHealthy, countDistinctVisitors, resetTracker } from './face-recognition.js';
@@ -79,26 +78,36 @@ export function getCamerasHealth() {
   return snapshot;
 }
 
-// Decode a JPEG buffer to a downscaled raw RGB buffer (320x240) for fast
-// pixel-level motion diff. Avoids a second ffmpeg call per cycle — we reuse
-// the same JPEG that feeds YOLO / face detection.
-function jpegToDownscaledRgb(jpegBuffer, targetW = 320, targetH = 240) {
-  const { data, width, height } = jpeg.decode(jpegBuffer, { useTArray: true });
-  const out = Buffer.alloc(targetW * targetH * 3);
-  const xRatio = width / targetW;
-  const yRatio = height / targetH;
-  for (let y = 0; y < targetH; y++) {
-    const srcY = Math.floor(y * yRatio);
-    for (let x = 0; x < targetW; x++) {
-      const srcX = Math.floor(x * xRatio);
-      const srcIdx = (srcY * width + srcX) * 4; // RGBA
-      const dstIdx = (y * targetW + x) * 3;     // RGB
-      out[dstIdx] = data[srcIdx];
-      out[dstIdx + 1] = data[srcIdx + 1];
-      out[dstIdx + 2] = data[srcIdx + 2];
-    }
-  }
-  return out;
+// Extract a single frame from HLS stream as raw RGB buffer (320x240) for fast
+// pixel-level motion diff. Separate ffmpeg from extractFrameJpeg to keep the
+// hot path synchronous-free in Node — JS-side JPEG decoding blocks the event
+// loop under load and starves the HTTP server.
+function extractFrame(hlsUrl) {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', [
+      '-i', hlsUrl,
+      '-frames:v', '1',
+      '-f', 'rawvideo',
+      '-pix_fmt', 'rgb24',
+      '-vf', 'scale=320:240',
+      '-loglevel', 'error',
+      '-y',
+      'pipe:1',
+    ]);
+
+    const chunks = [];
+    ffmpeg.stdout.on('data', (chunk) => chunks.push(chunk));
+    ffmpeg.on('close', (code) => {
+      if (code !== 0 || chunks.length === 0) {
+        reject(new Error(`FFmpeg frame extraction failed (code ${code})`));
+        return;
+      }
+      resolve(Buffer.concat(chunks));
+    });
+    ffmpeg.on('error', reject);
+    // Must stay < loop interval so flaky streams don't accumulate processes.
+    setTimeout(() => { ffmpeg.kill('SIGKILL'); reject(new Error('Frame extraction timeout')); }, 2500);
+  });
 }
 
 // Compare two raw RGB frames and return the percentage of changed pixels
@@ -250,14 +259,13 @@ async function processFaces(camera, hlsUrl) {
   }
 }
 
-// Check for persons using YOLO+ByteTrack. If `cachedJpeg` is provided, we
-// reuse it instead of extracting another frame — critical on busy nodes where
-// each ffmpeg call costs 200-500ms. Returns the jpeg buffer and enriched
-// tracks so the caller can reuse them for face detection on the same frame.
+// Check for persons using YOLO+ByteTrack. Returns the jpeg buffer and the
+// enriched tracks so the caller can reuse them for face detection on the
+// same frame (avoids a second frame extraction and a second YOLO call).
 // Returns { personDetected, jpegBuffer, enrichedTracks } or null on error.
-async function checkPersonsWithTracking(camera, hlsUrl, cachedJpeg = null) {
+async function checkPersonsWithTracking(camera, hlsUrl) {
   try {
-    const jpegBuffer = cachedJpeg || await extractFrameJpeg(hlsUrl);
+    const jpegBuffer = await extractFrameJpeg(hlsUrl);
     const trackResult = await trackPersons(jpegBuffer, camera.id);
     const persons = trackResult.persons || [];
 
@@ -317,10 +325,7 @@ async function processCamera(camera) {
   let facesProcessedThisCycle = false;
 
   try {
-    // Extract a single JPEG per cycle and reuse it for pixel-diff, YOLO and
-    // face detection — saves one ffmpeg invocation per camera per tick.
-    const currentJpeg = await extractFrameJpeg(hlsUrl);
-    const currentFrame = jpegToDownscaledRgb(currentJpeg);
+    const currentFrame = await extractFrame(hlsUrl);
 
     // Extraction succeeded — reset consecutive-failure counter
     if (state.consecutiveFails > 0) {
@@ -354,7 +359,7 @@ async function processCamera(camera) {
           // Check for persons using YOLO+ByteTrack (same call that feeds tracking).
           // Reuses the extracted JPEG — no second ffmpeg, no second YOLO call.
           if (faceServiceAvailable) {
-            const result = await checkPersonsWithTracking(camera, hlsUrl, currentJpeg);
+            const result = await checkPersonsWithTracking(camera, hlsUrl);
             const personFound = result?.personDetected || false;
             state.personCheckAttempts++;
 
@@ -581,9 +586,14 @@ setInterval(() => {
 // Main loop: check all online cameras for motion
 let running = false;
 let intervalHandle = null;
+// Guard against re-entrance: with 30 cameras on a busy VPS the loop can
+// take > 3s to finish; without this, setInterval stacks multiple loops in
+// parallel, spawning duplicate ffmpeg per camera and saturating CPU.
+let loopRunning = false;
 
 async function motionDetectionLoop() {
-  if (!running) return;
+  if (!running || loopRunning) return;
+  loopRunning = true;
 
   try {
     // Get all online cameras with motion detection enabled or continuous recording
@@ -614,6 +624,8 @@ async function motionDetectionLoop() {
     }
   } catch (err) {
     console.error('[Motion] Loop error:', err.message);
+  } finally {
+    loopRunning = false;
   }
 }
 
