@@ -146,7 +146,7 @@ function saveFrameAsJpeg(hlsUrl, outputPath) {
     setTimeout(() => {
       ffmpeg.kill('SIGKILL');
       reject(new Error('Thumbnail save timeout'));
-    }, 10000);
+    }, 3000);
   });
 }
 
@@ -175,7 +175,10 @@ function extractFrameJpeg(hlsUrl) {
       resolve(Buffer.concat(chunks));
     });
     ffmpeg.on('error', reject);
-    setTimeout(() => { ffmpeg.kill('SIGKILL'); reject(new Error('JPEG frame timeout')); }, 10000);
+    // Timeout must be < motion loop interval (3s) so failing cameras don't
+    // accumulate overlapping ffmpeg processes tick after tick. 991 failures
+    // in 24h × 10s hang = ~165min/day of pending ffmpeg for a single camera.
+    setTimeout(() => { ffmpeg.kill('SIGKILL'); reject(new Error('JPEG frame timeout')); }, 2500);
   });
 }
 
