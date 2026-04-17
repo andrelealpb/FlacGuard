@@ -54,6 +54,31 @@ export function getFaceServiceTelemetry() {
   return { ...faceServiceTelemetry };
 }
 
+// Snapshot of per-camera stream health — used by the Control dashboard to
+// flag cameras with flaky Wi-Fi ("internet ruim" badge).
+export function getCamerasHealth() {
+  const now = Date.now();
+  const snapshot = [];
+  for (const [cameraId, state] of cameraStates.entries()) {
+    const inBackoff = state.skipUntil && now < state.skipUntil;
+    // A camera is "flaky" when it has a non-trivial volume of failures in
+    // the rolling 24h window. Threshold picked so that a brief blip (< 20
+    // failures/day) doesn't alert, but sustained instability does.
+    const FLAKY_THRESHOLD = 50;
+    const flaky = (state.totalFails24h || 0) >= FLAKY_THRESHOLD;
+    snapshot.push({
+      camera_id: cameraId,
+      consecutive_fails: state.consecutiveFails || 0,
+      total_fails_24h: state.totalFails24h || 0,
+      in_backoff: Boolean(inBackoff),
+      backoff_ms_remaining: inBackoff ? state.skipUntil - now : 0,
+      last_success_at: state.lastSuccessAt ? new Date(state.lastSuccessAt).toISOString() : null,
+      flaky,
+    });
+  }
+  return snapshot;
+}
+
 // Decode a JPEG buffer to a downscaled raw RGB buffer (320x240) for fast
 // pixel-level motion diff. Avoids a second ffmpeg call per cycle — we reuse
 // the same JPEG that feeds YOLO / face detection.
@@ -267,8 +292,20 @@ async function processCamera(camera) {
       postBufferTimer: null,
       personConfirmed: false,
       personCheckAttempts: 0,
+      // Exponential backoff for cameras whose HLS stream flaps
+      failCount: 0,
+      skipUntil: 0,
+      consecutiveFails: 0,
+      lastSuccessAt: null,
+      totalFails24h: 0,
     };
     cameraStates.set(id, state);
+  }
+
+  // Skip cameras in backoff window — avoids wasting CPU spawning ffmpeg
+  // against a stream that keeps failing (usually flaky Wi-Fi at the PDV).
+  if (state.skipUntil && Date.now() < state.skipUntil) {
+    return;
   }
 
   // Tracks whether we already ran face detection in this cycle via the
@@ -281,6 +318,13 @@ async function processCamera(camera) {
     // face detection — saves one ffmpeg invocation per camera per tick.
     const currentJpeg = await extractFrameJpeg(hlsUrl);
     const currentFrame = jpegToDownscaledRgb(currentJpeg);
+
+    // Extraction succeeded — reset consecutive-failure counter
+    if (state.consecutiveFails > 0) {
+      console.log(`[Motion] Camera ${camera.name} (${id}): stream recovered after ${state.consecutiveFails} consecutive failures`);
+      state.consecutiveFails = 0;
+    }
+    state.lastSuccessAt = Date.now();
 
     if (state.previousFrame) {
       const changePercent = compareFrames(state.previousFrame, currentFrame, motion_sensitivity);
@@ -501,15 +545,35 @@ async function processCamera(camera) {
 
     state.previousFrame = currentFrame;
   } catch (err) {
-    // Silently ignore frame extraction errors (camera may be temporarily unavailable)
-    if (!err.message.includes('timeout')) {
-      // Only log non-timeout errors occasionally
-      if (Math.random() < 0.1) {
-        console.error(`[Motion] Frame error for camera ${id}:`, err.message.slice(0, 100));
+    // Flaky-camera exponential backoff: after N consecutive failures the
+    // camera is paused for a growing window so the API doesn't keep spawning
+    // ffmpeg against a dead stream. Recovers instantly on the first success.
+    state.consecutiveFails = (state.consecutiveFails || 0) + 1;
+    state.failCount = (state.failCount || 0) + 1;
+    state.totalFails24h = (state.totalFails24h || 0) + 1;
+
+    const BACKOFF_AFTER = 3;
+    if (state.consecutiveFails >= BACKOFF_AFTER) {
+      // 30s, 60s, 120s, 240s, 300s (capped)
+      const exponent = Math.min(state.consecutiveFails - BACKOFF_AFTER, 4);
+      const backoffMs = Math.min(30000 * Math.pow(2, exponent), 300000);
+      state.skipUntil = Date.now() + backoffMs;
+      if (state.consecutiveFails === BACKOFF_AFTER || state.consecutiveFails % 10 === 0) {
+        console.warn(`[Motion] Camera ${camera.name} (${id}): ${state.consecutiveFails} consecutive failures, backing off for ${backoffMs / 1000}s`);
       }
+    } else if (!err.message.includes('timeout') && Math.random() < 0.1) {
+      console.error(`[Motion] Frame error for camera ${id}:`, err.message.slice(0, 100));
     }
   }
 }
+
+// Reset 24h rolling counters once per hour (avoid unbounded growth and let
+// operational alerts reflect recent state rather than container lifetime).
+setInterval(() => {
+  for (const state of cameraStates.values()) {
+    if (state.totalFails24h) state.totalFails24h = Math.floor(state.totalFails24h * 0.9);
+  }
+}, 3600_000);
 
 // Main loop: check all online cameras for motion
 let running = false;
