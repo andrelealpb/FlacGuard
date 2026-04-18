@@ -319,6 +319,45 @@ async function processCamera(camera) {
     return;
   }
 
+  // Hard cap on a single motion event — if movement hasn't paused long enough
+  // for the post-buffer to fire in 10 minutes (busy store opening, TV in the
+  // frame, cortinas ao vento), force-close the event. If motion persists, the
+  // next pixel-diff cycle will start a fresh event with its own YOLO check.
+  const MAX_MOTION_DURATION_MS = 10 * 60 * 1000;
+  if (state.motionActive && state.motionStartAt) {
+    const activeMs = Date.now() - state.motionStartAt.getTime();
+    if (activeMs > MAX_MOTION_DURATION_MS) {
+      console.warn(`[Motion] Camera ${camera.name} (${id}): forced end after ${Math.round(activeMs / 1000)}s (max duration reached)`);
+      if (state.postBufferTimer) {
+        clearTimeout(state.postBufferTimer);
+        state.postBufferTimer = null;
+      }
+      const motionEndAt = new Date();
+      try {
+        await pool.query(
+          `INSERT INTO events (camera_id, type, payload)
+           VALUES ($1, 'motion', $2)`,
+          [id, JSON.stringify({
+            action: 'end',
+            reason: 'max_duration_reached',
+            started_at: state.motionStartAt.toISOString(),
+            ended_at: motionEndAt.toISOString(),
+            duration_seconds: Math.round(activeMs / 1000),
+          })]
+        );
+      } catch (err) {
+        console.error(`[Motion] Error creating forced-end event for ${camera.name}:`, err.message);
+      }
+      if (recording_mode === 'motion') {
+        stopRecording(id);
+      }
+      state.motionActive = false;
+      state.personConfirmed = false;
+      state.personCheckAttempts = 0;
+      state.motionStartAt = null;
+    }
+  }
+
   // Tracks whether we already ran face detection in this cycle via the
   // person-confirmation path, so the trailing fall-through below doesn't
   // extract the frame and run YOLO a second time on the same camera tick.
